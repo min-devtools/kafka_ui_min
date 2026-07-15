@@ -1,0 +1,12 @@
+# deps / build output
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+target/
+
+# local tooling
+.worktrees/
+.claude/settings.local.json
+.DS_Store
+*.log
