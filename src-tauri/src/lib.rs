@@ -19,8 +19,14 @@ const INSPECT_GROUP: &str = "kafkamin-inspect";
 const PAYLOAD_CAP: usize = 32 * 1024;
 const SEARCH_RESULT_CAP: usize = 10_000;
 
+#[derive(Clone)]
+struct SearchHandle {
+    cancelled: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
+}
+
 #[derive(Default)]
-struct SearchRegistry(Mutex<HashMap<String, Arc<AtomicBool>>>);
+struct SearchRegistry(Mutex<HashMap<String, SearchHandle>>);
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -532,6 +538,7 @@ fn search_impl(
     text: String,
     conditions: Vec<SearchCondition>,
     cancelled: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
 ) -> Result<(i64, i64, i64, bool, Option<String>), String> {
     let mut config = base_config(&conn);
     config
@@ -593,6 +600,38 @@ fn search_impl(
     let mut scan_error = None;
 
     while completed < total_partitions && !cancelled.load(Ordering::Relaxed) {
+        // Lazy scan: while the UI has buffered enough matches for the pages it is
+        // showing, idle here instead of polling. The consumer keeps its assigned
+        // offsets, so resuming continues exactly where it left off — no re-scan.
+        // ponytail: assign (not subscribe) → no group heartbeat, safe to stop polling.
+        if paused.load(Ordering::Relaxed) {
+            // flush any pending matches so the paused page renders fully
+            if !batch.is_empty() {
+                let messages = std::mem::take(&mut batch);
+                let _ = app.emit(
+                    "kafka-search-batch",
+                    SearchBatch {
+                        search_id: search_id.clone(),
+                        messages,
+                    },
+                );
+            }
+            emit_search_progress(
+                &app,
+                &search_id,
+                scanned,
+                total,
+                completed,
+                total_partitions,
+                candidate_matches,
+                started,
+            );
+            while paused.load(Ordering::Relaxed) && !cancelled.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(80));
+            }
+            last_progress = Instant::now();
+            continue;
+        }
         match consumer.poll(Duration::from_millis(200)) {
             Some(Ok(raw)) => {
                 let partition = raw.partition();
@@ -732,11 +771,14 @@ async fn kafka_search_start(
 ) -> Result<(), String> {
     validate_conditions(&conditions)?;
     let cancelled = Arc::new(AtomicBool::new(false));
-    registry
-        .0
-        .lock()
-        .map_err(|e| e.to_string())?
-        .insert(search_id.clone(), cancelled.clone());
+    let paused = Arc::new(AtomicBool::new(false));
+    registry.0.lock().map_err(|e| e.to_string())?.insert(
+        search_id.clone(),
+        SearchHandle {
+            cancelled: cancelled.clone(),
+            paused: paused.clone(),
+        },
+    );
     let app_for_worker = app.clone();
     let id_for_worker = search_id.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -748,6 +790,7 @@ async fn kafka_search_start(
             text,
             conditions,
             cancelled,
+            paused,
         );
         let finished = match result {
             Ok((scanned, total, candidate_matches, was_cancelled, scan_error)) => SearchFinished {
@@ -789,13 +832,31 @@ fn kafka_search_cancel(
     registry: State<'_, SearchRegistry>,
     search_id: String,
 ) -> Result<(), String> {
-    if let Some(cancelled) = registry
+    if let Some(handle) = registry
         .0
         .lock()
         .map_err(|e| e.to_string())?
         .get(&search_id)
     {
-        cancelled.store(true, Ordering::Relaxed);
+        handle.cancelled.store(true, Ordering::Relaxed);
+        handle.paused.store(false, Ordering::Relaxed); // wake a paused scan so it can exit
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn kafka_search_set_paused(
+    registry: State<'_, SearchRegistry>,
+    search_id: String,
+    paused: bool,
+) -> Result<(), String> {
+    if let Some(handle) = registry
+        .0
+        .lock()
+        .map_err(|e| e.to_string())?
+        .get(&search_id)
+    {
+        handle.paused.store(paused, Ordering::Relaxed);
     }
     Ok(())
 }
@@ -1171,6 +1232,7 @@ pub fn run() {
             kafka_consume,
             kafka_search_start,
             kafka_search_cancel,
+            kafka_search_set_paused,
             kafka_produce,
             kafka_reset_offsets,
             kafka_create_topic,

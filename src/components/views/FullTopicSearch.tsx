@@ -4,7 +4,8 @@ import { Badge } from "../../ui/Badge";
 import { Combobox } from "../../ui/Combobox";
 import { Icon } from "../../ui/Icon";
 import { ToolButton } from "../../ui/ToolButton";
-import { cancelFullTopicSearch, startFullTopicSearch } from "../../lib/kafka";
+import { LoadingBar } from "../../ui/LoadingBar";
+import { cancelFullTopicSearch, setFullTopicSearchPaused, startFullTopicSearch } from "../../lib/kafka";
 import { formatDocCount } from "../../lib/format";
 import type { MessageRec, SearchBatch, SearchCondition, SearchFinished, SearchOperator, SearchProgress } from "../../lib/types";
 import { useActiveConnection, useClusterMeta } from "../../lib/queries";
@@ -13,6 +14,8 @@ import { compileFilter, type JsFilter } from "../../lib/messageFilter";
 
 const RESULT_CAP = 10_000;
 const PAGE_SIZES = [25, 50, 100, 250];
+/** pages of matches kept buffered ahead of the viewed page before the scan idles */
+const PREFETCH_PAGES = 2;
 const OPERATORS: { value: SearchOperator; label: string }[] = [
   { value: "equals", label: "equals" },
   { value: "notEquals", label: "not equals" },
@@ -53,6 +56,8 @@ export function FullTopicSearch({
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
+  const [paused, setPaused] = useState(false);
+  const pausedRef = useRef(false);
   const searchIdRef = useRef<string | null>(null);
   const unlistenRef = useRef<UnlistenFn[]>([]);
   const filterFnsRef = useRef<ReturnType<typeof compileFilter>[]>([]);
@@ -107,6 +112,8 @@ export function FullTopicSearch({
     setProgress(null);
     setError(null);
     setPage(1);
+    setPaused(false);
+    pausedRef.current = false;
     setState("running");
     selectMsg(null);
 
@@ -158,11 +165,29 @@ export function FullTopicSearch({
   const totalPages = Math.max(1, Math.ceil(results.length / pageSize));
   useEffect(() => setPage((value) => Math.min(value, totalPages)), [totalPages]);
   const visible = useMemo(() => results.slice((page - 1) * pageSize, page * pageSize), [results, page, pageSize]);
+
+  // Lazy scan: keep the backend scanning only until it has buffered enough matches
+  // for the viewed page plus a lookahead, then idle it. Paging forward resumes —
+  // the backend keeps its offsets, so nothing is re-scanned.
+  useEffect(() => {
+    const id = searchIdRef.current;
+    if (state !== "running" || !id) return;
+    const target = Math.min((page + PREFETCH_PAGES) * pageSize, RESULT_CAP);
+    const shouldPause = results.length >= target;
+    if (shouldPause !== pausedRef.current) {
+      pausedRef.current = shouldPause;
+      setPaused(shouldPause);
+      void setFullTopicSearchPaused(id, shouldPause);
+    }
+  }, [state, page, pageSize, results.length]);
+
   const percent = progress?.total ? Math.min(100, Math.round(progress.scanned / progress.total * 100)) : 0;
   const backendTruncatedForJs = usesJsFilter && (progress?.candidateMatches ?? 0) > RESULT_CAP;
   const matchCount = usesJsFilter ? acceptedCount : (progress?.candidateMatches ?? acceptedCount);
   const statusText = state === "running"
-    ? `Scanning · ${percent}%`
+    ? paused
+      ? `Idle · ${formatDocCount(matchCount)} matches ready · page forward to scan more`
+      : `Scanning · ${percent}%`
     : state === "completed"
       ? matchCount ? `Completed · ${formatDocCount(matchCount)} matches` : "Completed · no matching messages"
       : state === "cancelled"
@@ -171,6 +196,7 @@ export function FullTopicSearch({
 
   return (
     <section className={`content full-search-view ${active ? "active" : ""}`}>
+      <LoadingBar active={state === "running" && !paused} />
       <div className="full-search-head">
         <ToolButton onClick={onBrowse}><Icon name="arrow-left" /> Browse</ToolButton>
         <strong>Full topic search</strong>
@@ -206,7 +232,7 @@ export function FullTopicSearch({
         </div>
       )}
       <div className="full-search-progress">
-        <div className="full-progress-track"><span style={{ width: `${percent}%` }} /></div>
+        <LoadingBar active bottom value={percent / 100} />
         <strong>{statusText}</strong>
         <span>{formatDocCount(progress?.scanned ?? 0)} / {formatDocCount(progress?.total ?? 0)} scanned</span>
         <span>{progress?.completedPartitions ?? 0} / {progress?.totalPartitions ?? 0} partitions</span>

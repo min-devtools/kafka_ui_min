@@ -6,6 +6,7 @@ import { CodeInput } from "../../ui/CodeInput";
 import { DateTimeModal } from "../../ui/DateTimeModal";
 import { SortTh } from "../../ui/SortTh";
 import { Icon } from "../../ui/Icon";
+import { LoadingBar } from "../../ui/LoadingBar";
 import { useSortedRows } from "../../lib/useSort";
 import { useApp } from "../../store";
 import { useActiveConnection, useClusterMeta } from "../../lib/queries";
@@ -245,6 +246,7 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
       className={`content indexes-view ${active ? "active" : ""}`}
       style={{ gridTemplateRows: "46px 46px minmax(0, 1fr)" }}
     >
+      <LoadingBar active={loading} />
       {/* row 1 — source: topic / partition / limit / order */}
       <div className="index-searchbar" style={{ gridTemplateColumns: `minmax(200px, 300px) auto auto auto${from === "offset" || from === "timestamp" ? " auto" : ""} 1fr auto` }}>
         <Combobox

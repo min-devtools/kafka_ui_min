@@ -1,4 +1,6 @@
 import { useEffect } from "react";
+import { useIsFetching } from "@tanstack/react-query";
+import { LoadingBar } from "./ui/LoadingBar";
 import { Titlebar } from "./components/Titlebar";
 import { Sidebar } from "./components/Sidebar";
 import { TabsBar } from "./components/TabsBar";
@@ -43,6 +45,7 @@ export default function App() {
   } = useApp();
 
   const inspectorOk = useApp((s) => inspectorAvailable(s));
+  const fetching = useIsFetching() > 0;
   const uiFont = useApp((s) => s.uiFont);
   const editorFont = useApp((s) => s.editorFont);
   const uiFontSize = useApp((s) => s.uiFontSize);
@@ -162,6 +165,7 @@ export default function App() {
 
   return (
     <div className="app-frame">
+      <LoadingBar active={fetching} />
       <Titlebar />
       <main className="main">
         <Sidebar />

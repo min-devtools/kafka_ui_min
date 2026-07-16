@@ -61,6 +61,10 @@ export const startFullTopicSearch = (
 export const cancelFullTopicSearch = (searchId: string) =>
   invoke<void>("kafka_search_cancel", { searchId });
 
+/** Idle/resume a running scan. Paused scans keep their offsets — resuming does not re-scan. */
+export const setFullTopicSearchPaused = (searchId: string, paused: boolean) =>
+  invoke<void>("kafka_search_set_paused", { searchId, paused });
+
 export const produceMessage = (
   conn: Connection,
   topic: string,
