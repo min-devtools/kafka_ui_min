@@ -630,6 +630,69 @@ body.light .docs-preview-editor { color: var(--editor-fg); }
 
 .index-table-wrap { min-height: 0; overflow: auto; }
 
+.full-search-view {
+  grid-template-rows: 46px auto auto 50px minmax(0, 1fr) 38px;
+  min-height: 0;
+  background: var(--window);
+}
+
+.full-search-head, .full-search-controls, .full-search-progress, .full-search-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in oklab, var(--window), var(--app-bg) 3%);
+}
+
+.full-search-head strong { color: var(--text); }
+.full-search-head > span:nth-of-type(2) { flex: 1; }
+.full-search-snapshot { color: var(--text-3); font: 0.8462rem var(--font-mono); }
+
+.full-search-controls {
+  display: grid;
+  grid-template-columns: minmax(220px, 320px) minmax(220px, 1fr) auto auto;
+}
+
+.full-search-conditions {
+  display: grid;
+  gap: 6px;
+  padding: 8px 12px;
+  max-height: 150px;
+  overflow: auto;
+  border-bottom: 1px solid var(--line);
+  background: var(--pane);
+}
+
+.full-condition {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 130px minmax(160px, 1fr) auto;
+  gap: 8px;
+}
+
+.full-search-progress {
+  position: relative;
+  flex-wrap: wrap;
+  color: var(--text-3);
+  font: 0.8462rem var(--font-mono);
+}
+
+.full-search-progress strong { color: var(--text); }
+.full-search-progress .badge { margin-left: auto; }
+.full-progress-track { position: absolute; inset: auto 0 0; height: 2px; background: var(--pane-3); }
+.full-progress-track span { display: block; height: 100%; background: var(--blue); transition: width 160ms ease; }
+
+.full-search-foot { justify-content: space-between; border-top: 1px solid var(--line); border-bottom: 0; color: var(--text-2); font: 0.8462rem var(--font-mono); }
+.full-search-foot label { display: flex; align-items: center; gap: 6px; }
+.full-search-foot select { width: 72px; }
+.truncate-cell { max-width: 480px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+@media (max-width: 850px) {
+  .full-search-controls { grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr); }
+  .full-condition { grid-template-columns: minmax(180px, 1fr) 120px minmax(140px, 1fr) auto; }
+  .full-search-snapshot { display: none; }
+}
+
 .cluster-main { padding: 18px; overflow: auto; }
 
 .dense-grid {

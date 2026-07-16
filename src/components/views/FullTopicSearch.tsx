@@ -1,0 +1,248 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { Badge } from "../../ui/Badge";
+import { Combobox } from "../../ui/Combobox";
+import { Icon } from "../../ui/Icon";
+import { ToolButton } from "../../ui/ToolButton";
+import { cancelFullTopicSearch, startFullTopicSearch } from "../../lib/kafka";
+import { formatDocCount } from "../../lib/format";
+import type { MessageRec, SearchBatch, SearchCondition, SearchFinished, SearchOperator, SearchProgress } from "../../lib/types";
+import { useActiveConnection, useClusterMeta } from "../../lib/queries";
+import { useApp } from "../../store";
+import { compileFilter, type JsFilter } from "../../lib/messageFilter";
+
+const RESULT_CAP = 10_000;
+const PAGE_SIZES = [25, 50, 100, 250];
+const OPERATORS: { value: SearchOperator; label: string }[] = [
+  { value: "equals", label: "equals" },
+  { value: "notEquals", label: "not equals" },
+  { value: "contains", label: "contains" },
+  { value: "exists", label: "exists" },
+  { value: "gt", label: ">" },
+  { value: "gte", label: ">=" },
+  { value: "lt", label: "<" },
+  { value: "lte", label: "<=" },
+];
+
+type SearchState = "idle" | "running" | "completed" | "cancelled" | "failed";
+
+export function FullTopicSearch({
+  active,
+  initialTopic,
+  jsFilters,
+  onEditFilters,
+  onBrowse,
+}: {
+  active: boolean;
+  initialTopic: string;
+  jsFilters: JsFilter[];
+  onEditFilters: () => void;
+  onBrowse: () => void;
+}) {
+  const conn = useActiveConnection();
+  const meta = useClusterMeta();
+  const { selectMsg, selectedMsg, showToast } = useApp();
+  const [topic, setTopic] = useState(initialTopic);
+  const [text, setText] = useState("");
+  const [conditions, setConditions] = useState<SearchCondition[]>([]);
+  const [results, setResults] = useState<MessageRec[]>([]);
+  const [acceptedCount, setAcceptedCount] = useState(0);
+  const [usesJsFilter, setUsesJsFilter] = useState(false);
+  const [state, setState] = useState<SearchState>("idle");
+  const [progress, setProgress] = useState<SearchProgress | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const searchIdRef = useRef<string | null>(null);
+  const unlistenRef = useRef<UnlistenFn[]>([]);
+  const filterFnsRef = useRef<ReturnType<typeof compileFilter>[]>([]);
+
+  const topicOptions = (meta.data?.topics ?? []).filter((item) => !item.internal)
+    .map((item) => ({ value: item.name, hint: `${item.partitions}p` }));
+
+  const stopListeners = () => {
+    unlistenRef.current.forEach((unlisten) => unlisten());
+    unlistenRef.current = [];
+  };
+
+  const cancel = async () => {
+    if (searchIdRef.current) await cancelFullTopicSearch(searchIdRef.current);
+  };
+
+  useEffect(() => () => {
+    if (searchIdRef.current) void cancelFullTopicSearch(searchIdRef.current);
+    stopListeners();
+  }, []);
+
+  const start = async () => {
+    if (!conn || !topic) {
+      showToast("Pick a topic", "Choose a topic to search.", "warn");
+      return;
+    }
+    const invalid = conditions.find((condition) => {
+      const field = condition.field.trim();
+      const validField = ["key", "partition", "offset", "timestamp"].includes(field)
+        || (/^headers\.[^.]+$/.test(field))
+        || (/^value\.[^.]+(?:\.[^.]+)*$/.test(field));
+      const numericValue = !["gt", "gte", "lt", "lte"].includes(condition.operator) || Number.isFinite(Number(condition.value));
+      return !validField || (condition.operator !== "exists" && !condition.value.trim()) || !numericValue;
+    });
+    if (invalid) {
+      showToast("Invalid condition", "Use value.field, key, partition, offset, timestamp, or headers.name. Numeric comparisons require a number.", "warn");
+      return;
+    }
+    try {
+      filterFnsRef.current = jsFilters.filter((filter) => filter.enabled).map((filter) => compileFilter(filter.code));
+    } catch (err) {
+      showToast("Invalid JS filter", String(err), "err");
+      return;
+    }
+    if (searchIdRef.current) await cancelFullTopicSearch(searchIdRef.current);
+    stopListeners();
+    const searchId = crypto.randomUUID();
+    searchIdRef.current = searchId;
+    setResults([]);
+    setAcceptedCount(0);
+    setUsesJsFilter(filterFnsRef.current.length > 0);
+    setProgress(null);
+    setError(null);
+    setPage(1);
+    setState("running");
+    selectMsg(null);
+
+    const [offBatch, offProgress, offFinished] = await Promise.all([
+      listen<SearchBatch>("kafka-search-batch", ({ payload }) => {
+        if (payload.searchId !== searchId) return;
+        const accepted = payload.messages.filter((message) => {
+          let value: unknown;
+          try { value = JSON.parse(message.payload); } catch { value = undefined; }
+          return filterFnsRef.current.every((fn) => {
+            try {
+              return !!fn(value, message.key, message.partition, message.offset, message.timestamp, Object.fromEntries(message.headers));
+            } catch {
+              return false;
+            }
+          });
+        });
+        setAcceptedCount((count) => count + accepted.length);
+        setResults((current) => current.length >= RESULT_CAP ? current : [...current, ...accepted].slice(0, RESULT_CAP));
+      }),
+      listen<SearchProgress>("kafka-search-progress", ({ payload }) => {
+        if (payload.searchId === searchId) setProgress(payload);
+      }),
+      listen<SearchFinished>("kafka-search-finished", ({ payload }) => {
+        if (payload.searchId !== searchId) return;
+        setState(payload.status);
+        setError(payload.error);
+        searchIdRef.current = null;
+        window.setTimeout(stopListeners, 0);
+      }),
+    ]);
+    unlistenRef.current = [offBatch, offProgress, offFinished];
+    try {
+      await startFullTopicSearch(
+        conn,
+        searchId,
+        topic,
+        text,
+        conditions.map((condition) => ({ ...condition, field: condition.field.trim(), value: condition.value.trim() })),
+      );
+    } catch (err) {
+      setState("failed");
+      setError(String(err));
+      searchIdRef.current = null;
+      stopListeners();
+    }
+  };
+
+  const totalPages = Math.max(1, Math.ceil(results.length / pageSize));
+  useEffect(() => setPage((value) => Math.min(value, totalPages)), [totalPages]);
+  const visible = useMemo(() => results.slice((page - 1) * pageSize, page * pageSize), [results, page, pageSize]);
+  const percent = progress?.total ? Math.min(100, Math.round(progress.scanned / progress.total * 100)) : 0;
+  const backendTruncatedForJs = usesJsFilter && (progress?.candidateMatches ?? 0) > RESULT_CAP;
+  const matchCount = usesJsFilter ? acceptedCount : (progress?.candidateMatches ?? acceptedCount);
+  const statusText = state === "running"
+    ? `Scanning · ${percent}%`
+    : state === "completed"
+      ? matchCount ? `Completed · ${formatDocCount(matchCount)} matches` : "Completed · no matching messages"
+      : state === "cancelled"
+        ? `Cancelled · scanned ${percent}%`
+        : state === "failed" ? `Failed · ${error ?? "unknown error"}` : "Ready to scan";
+
+  return (
+    <section className={`content full-search-view ${active ? "active" : ""}`}>
+      <div className="full-search-head">
+        <ToolButton onClick={onBrowse}><Icon name="arrow-left" /> Browse</ToolButton>
+        <strong>Full topic search</strong>
+        <span className="full-search-snapshot">Finite snapshot · scans every partition</span>
+        <span />
+        {state === "running"
+          ? <ToolButton variant="danger" onClick={() => void cancel()}><Icon name="x" /> Cancel</ToolButton>
+          : <ToolButton variant="primary" disabled={!conn} onClick={() => void start()}><Icon name="search" /> Search</ToolButton>}
+      </div>
+      <div className="full-search-controls">
+        <Combobox value={topic} options={topicOptions} placeholder="— topic —" onChange={setTopic} />
+        <input className="index-search" placeholder="Search key or payload" value={text} onChange={(event) => setText(event.target.value)} />
+        <ToolButton onClick={() => setConditions((items) => [...items, { field: "value.", operator: "equals", value: "" }])}>
+          <Icon name="plus" /> Condition
+        </ToolButton>
+        <ToolButton onClick={onEditFilters}><Icon name="code" /> JS filters ({jsFilters.filter((item) => item.enabled).length})</ToolButton>
+      </div>
+      {conditions.length > 0 && (
+        <div className="full-search-conditions">
+          {conditions.map((condition, index) => (
+            <div className="full-condition" key={index}>
+              <input className="index-search" aria-label={`Condition ${index + 1} field`} placeholder="value.user.id, key, headers.source" value={condition.field}
+                onChange={(event) => setConditions((items) => items.map((item, i) => i === index ? { ...item, field: event.target.value } : item))} />
+              <select className="index-search" value={condition.operator}
+                onChange={(event) => setConditions((items) => items.map((item, i) => i === index ? { ...item, operator: event.target.value as SearchOperator } : item))}>
+                {OPERATORS.map((operator) => <option key={operator.value} value={operator.value}>{operator.label}</option>)}
+              </select>
+              <input className="index-search" disabled={condition.operator === "exists"} placeholder="value" value={condition.value}
+                onChange={(event) => setConditions((items) => items.map((item, i) => i === index ? { ...item, value: event.target.value } : item))} />
+              <ToolButton iconOnly title="Remove condition" onClick={() => setConditions((items) => items.filter((_, i) => i !== index))}><Icon name="x" /></ToolButton>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="full-search-progress">
+        <div className="full-progress-track"><span style={{ width: `${percent}%` }} /></div>
+        <strong>{statusText}</strong>
+        <span>{formatDocCount(progress?.scanned ?? 0)} / {formatDocCount(progress?.total ?? 0)} scanned</span>
+        <span>{progress?.completedPartitions ?? 0} / {progress?.totalPartitions ?? 0} partitions</span>
+        <span>{formatDocCount(Math.round(progress?.messagesPerSecond ?? 0))} msg/s</span>
+        <span>{((progress?.elapsedMs ?? 0) / 1000).toFixed(1)}s</span>
+        <Badge>{formatDocCount(matchCount)} matches</Badge>
+      </div>
+      <div className="index-table-wrap">
+        {state === "idle" && <div className="empty-note">Search records a high-watermark snapshot, then scans it completely. New messages do not extend the search.</div>}
+        {state !== "idle" && results.length === 0 && <div className="empty-note">{state === "running" ? "Scanning for matches…" : "No matching messages."}</div>}
+        {results.length > 0 && (
+          <table>
+            <thead><tr><th style={{ width: 60 }}>Part</th><th style={{ width: 100 }}>Offset</th><th style={{ width: 180 }}>Timestamp</th><th style={{ width: 160 }}>Key</th><th>Payload</th></tr></thead>
+            <tbody>{visible.map((message) => (
+              <tr key={`${message.partition}-${message.offset}`} className={selectedMsg?.partition === message.partition && selectedMsg.offset === message.offset ? "selected" : ""} onClick={() => selectMsg(message)}>
+                <td>{message.partition}</td><td>{message.offset}</td>
+                <td>{message.timestamp ? new Date(message.timestamp).toISOString().replace("T", " ").slice(0, 19) : "—"}</td>
+                <td className="truncate-cell">{message.key ?? "—"}</td><td className="truncate-cell">{message.payload.slice(0, 500)}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        )}
+      </div>
+      <div className="full-search-foot">
+        <span>{backendTruncatedForJs
+          ? `Showing ${formatDocCount(results.length)} matches from the first ${formatDocCount(RESULT_CAP)} backend candidates · truncated`
+          : matchCount > RESULT_CAP
+            ? `Showing first ${formatDocCount(RESULT_CAP)} of ${formatDocCount(matchCount)} matches`
+            : `${formatDocCount(results.length)} results`}</span>
+        <div className="seg">
+          <label>Rows <select className="index-search" value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1); }}>{PAGE_SIZES.map((size) => <option key={size}>{size}</option>)}</select></label>
+          <ToolButton iconOnly title="Previous page" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}><Icon name="arrow-left" /></ToolButton>
+          <span>Page {page} / {totalPages}</span>
+          <ToolButton iconOnly title="Next page" disabled={page >= totalPages} onClick={() => setPage((value) => value + 1)}><Icon name="arrow-right" /></ToolButton>
+        </div>
+      </div>
+    </section>
+  );
+}

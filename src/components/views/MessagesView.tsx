@@ -13,6 +13,8 @@ import { consumeMessages, type ConsumeFrom } from "../../lib/kafka";
 import { setMessageFields } from "../../lib/monaco";
 import { formatValue, getPath } from "../../lib/format";
 import type { MessageRec } from "../../lib/types";
+import { FullTopicSearch } from "./FullTopicSearch";
+import { compileFilter, type FilterFn, type JsFilter } from "../../lib/messageFilter";
 
 /** Walk sampled payloads, collect dotted field paths for filter autocomplete. */
 function collectPaths(v: unknown, prefix: string, out: Set<string>, depth: number) {
@@ -43,21 +45,6 @@ function tryParse(payload: string): unknown {
   }
 }
 
-interface JsFilter {
-  id: string;
-  code: string;
-  enabled: boolean;
-}
-
-type FilterFn = (value: unknown, key: string | null, partition: number, offset: number, timestamp: number | null, headers: Record<string, string>) => unknown;
-
-/** Redpanda-console-style filter: a JS body over (value, key, partition, offset, timestamp, headers). Bare expressions get an implicit return. */
-function compileFilter(code: string): FilterFn {
-  const body = /\breturn\b/.test(code) ? code : `return (${code});`;
-  // eslint-disable-next-line @typescript-eslint/no-implied-eval
-  return new Function("value", "key", "partition", "offset", "timestamp", "headers", `"use strict";${body}`) as FilterFn;
-}
-
 export function MessagesView({ tabId, active }: { tabId: string; active: boolean }) {
   const conn = useActiveConnection();
   const meta = useClusterMeta();
@@ -76,6 +63,7 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
   const [messages, setMessages] = useState<MessageRec[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [jsFilters, setJsFilters] = useState<JsFilter[]>([]);
+  const [mode, setMode] = useState<"browse" | "search">("browse");
   const [jsDraft, setJsDraft] = useState("");
   const vimStatusRef = useRef<HTMLSpanElement>(null);
 
@@ -224,6 +212,34 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
     }
   });
 
+  if (mode === "search") {
+    return (
+      <>
+        <FullTopicSearch
+          active={active}
+          initialTopic={topic}
+          jsFilters={jsFilters}
+          onEditFilters={openNewFilter}
+          onBrowse={() => setMode("browse")}
+        />
+        {jsModalOpen && (
+          <div className="modal" onMouseDown={(e) => { if (e.target === e.currentTarget) setJsModalOpen(false); }}>
+            <div className="prompt-dialog" style={{ width: 620, maxWidth: "90vw" }}>
+              <strong>{editingFilterId ? "Edit JS filter" : "JS message filter"}</strong>
+              <p className="prompt-dialog-msg">Expression or body with <code>return</code> over (value, key, partition, offset, timestamp, headers).</p>
+              <CodeInput value={jsDraft} onChange={setJsDraft} vimStatusRef={vimStatusRef} height={140} />
+              <div className="prompt-dialog-foot">
+                <span ref={vimStatusRef} className="vim-status" style={{ flex: 1, textAlign: "left" }} />
+                <ToolButton onClick={() => setJsModalOpen(false)}>Cancel</ToolButton>
+                <ToolButton variant="primary" disabled={!jsDraft.trim()} onClick={saveJsFilter}><Icon name="plus" /> Add filter</ToolButton>
+              </div>
+            </div>
+          </div>
+        )}
+      </>
+    );
+  }
+
   return (
     <section
       className={`content indexes-view ${active ? "active" : ""}`}
@@ -283,7 +299,9 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
             {fromTime ? fromTime.replace("T", " ") : "pick time…"}
           </button>
         )}
-        <span style={{ color: "var(--text-3)", fontSize: "0.9231rem", justifySelf: "end" }}>⌘↵ to load</span>
+        <ToolButton title="Scan the complete topic snapshot" onClick={() => setMode("search")}>
+          <Icon name="search" /> Full search
+        </ToolButton>
         <Badge>{messages ? `${rows.length}/${messages.length}` : "0"}</Badge>
       </div>
       {/* row 2 — search + column projection + JS filters */}

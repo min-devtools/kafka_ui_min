@@ -73,6 +73,39 @@ export interface MessageRec {
   headers: [string, string][];
 }
 
+export type SearchOperator = "equals" | "notEquals" | "contains" | "exists" | "gt" | "gte" | "lt" | "lte";
+
+export interface SearchCondition {
+  field: string;
+  operator: SearchOperator;
+  value: string;
+}
+
+export interface SearchBatch {
+  searchId: string;
+  messages: MessageRec[];
+}
+
+export interface SearchProgress {
+  searchId: string;
+  scanned: number;
+  total: number;
+  completedPartitions: number;
+  totalPartitions: number;
+  candidateMatches: number;
+  elapsedMs: number;
+  messagesPerSecond: number;
+}
+
+export interface SearchFinished {
+  searchId: string;
+  status: "completed" | "cancelled" | "failed";
+  scanned: number;
+  total: number;
+  candidateMatches: number;
+  error: string | null;
+}
+
 export type TabKind =
   | "welcome"
   | "connection"

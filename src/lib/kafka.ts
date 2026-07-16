@@ -7,6 +7,7 @@ import type {
   MessageRec,
   PartitionOffsets,
   TopicStats,
+  SearchCondition,
 } from "./types";
 
 const wire = (conn: Connection) => ({
@@ -48,6 +49,17 @@ export const consumeMessages = (
     offset: opts.offset ?? null,
     timestampMs: opts.timestampMs ?? null,
   });
+
+export const startFullTopicSearch = (
+  conn: Connection,
+  searchId: string,
+  topic: string,
+  text: string,
+  conditions: SearchCondition[],
+) => invoke<void>("kafka_search_start", { conn: wire(conn), searchId, topic, text, conditions });
+
+export const cancelFullTopicSearch = (searchId: string) =>
+  invoke<void>("kafka_search_cancel", { searchId });
 
 export const produceMessage = (
   conn: Connection,
