@@ -16,7 +16,8 @@ cd "$ROOT_DIR"
 [[ -d node_modules ]] || npm ci
 [[ -f "$ICON_SOURCE" ]] || { echo "Error: app icon source is missing at $ICON_SOURCE" >&2; exit 1; }
 npm run tauri icon -- "$ICON_SOURCE"
-npm run tauri build -- --bundles app
+VERSION="$(tr -d '[:space:]' < "$ROOT_DIR/VERSION")"
+npm run tauri build -- --bundles app --config "{\"version\":\"$VERSION\"}"
 
 [[ -d "$APP_PATH" ]] || { echo "Error: bundle was not created at $APP_PATH" >&2; exit 1; }
 

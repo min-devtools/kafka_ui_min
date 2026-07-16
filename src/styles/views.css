@@ -632,10 +632,14 @@ body.light .docs-preview-editor { color: var(--editor-fg); }
 .index-table-wrap { min-height: 0; overflow: auto; }
 
 .full-search-view {
-  grid-template-rows: 46px auto auto 50px minmax(0, 1fr) 38px;
   min-height: 0;
   background: var(--window);
 }
+
+/* flex, not grid: the conditions row renders conditionally, so a fixed
+   grid-template-rows count misplaces every row below it */
+.full-search-view.active { display: flex; flex-direction: column; }
+.full-search-view .index-table-wrap { flex: 1; }
 
 .full-search-head, .full-search-controls, .full-search-progress, .full-search-foot {
   display: flex;
@@ -652,7 +656,7 @@ body.light .docs-preview-editor { color: var(--editor-fg); }
 
 .full-search-controls {
   display: grid;
-  grid-template-columns: minmax(220px, 320px) minmax(220px, 1fr) auto auto;
+  grid-template-columns: minmax(260px, 460px) minmax(220px, 1fr) auto auto;
 }
 
 .full-search-conditions {
@@ -707,132 +711,12 @@ body.light .docs-preview-editor { color: var(--editor-fg); }
 
 .doc-title span { display: block; color: var(--text-3); font: 11px var(--font-mono); }
 
-.settings-view {
-  min-height: 0;
-  overflow: auto;
-  background: var(--window);
-}
-.settings-shell {
-  width: 100%;
-  max-width: 720px;
-  margin: 0 auto;
-  display: grid;
-  gap: 16px;
-  padding: 24px;
-  align-content: start;
-}
-.settings-credit {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 0 4px;
-}
-.settings-github {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 14px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text);
-  font-size: 1rem;
-  font-weight: 600;
-  cursor: pointer;
-}
-.settings-github:hover {
-  border-color: var(--accent-primary);
-  color: var(--accent-primary);
-}
-.settings-credit-link {
-  background: none;
-  border: none;
-  cursor: pointer;
-  font-size: 0.9231rem;
-  font-weight: 600;
-  color: var(--accent-primary);
-  opacity: 0.8;
-}
-.settings-credit-link:hover { opacity: 1; text-decoration: underline; }
-.settings-header { display: grid; gap: 8px; }
-.settings-header h2 { margin: 0; font-size: 1.3846rem; color: var(--text); }
-.settings-card {
-  background: var(--pane);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 0 16px;
-  overflow: hidden;
-}
-.settings-card h3 {
-  margin: 0;
-  padding: 13px 0;
-  border-bottom: 1px solid var(--line);
-  font-size: 1rem;
-  color: var(--text);
-}
-.settings-row {
-  display: grid;
-  grid-template-columns: 30px minmax(0, 1fr) max-content;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 0;
-  border-bottom: 1px solid var(--line);
-}
-.settings-card .settings-row:last-child { border-bottom: 0; }
-.settings-icon {
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  color: var(--blue);
-  background: var(--pane-2);
-}
-.settings-copy { display: grid; gap: 3px; min-width: 0; }
-.settings-copy strong { color: var(--text); font-size: 1rem; }
-.settings-copy span { color: var(--text-3); font-size: 0.9231rem; line-height: 1.5; }
-.settings-control { display: flex; align-items: center; justify-content: flex-end; }
-.settings-select {
-  height: 28px;
-  min-width: 150px;
-  max-width: 220px;
-  padding: 0 8px;
-  color: var(--text);
-  background: var(--pane-2);
-  border: 1px solid var(--line-2);
-  border-radius: 8px;
-  outline: none;
-  font-size: 0.9231rem;
-}
-.settings-select:focus {
-  border-color: color-mix(in oklab, var(--blue), transparent 35%);
-  box-shadow: 0 0 0 3px color-mix(in oklab, var(--blue), transparent 86%);
-}
 .vim-status {
   color: var(--orange);
   font-family: var(--font-mono);
   text-transform: uppercase;
 }
 .vim-status input { color: var(--text); background: transparent; border: 0; outline: none; font: inherit; }
-
-.shortcut-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 4px 24px;
-  padding: 12px 0;
-}
-.shortcut-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) max-content;
-  align-items: center;
-  gap: 10px;
-  min-height: 26px;
-  color: var(--text-2);
-  font-size: 0.9231rem;
-}
-.shortcut-row .kbd { text-align: center; justify-self: end; }
 
 /* date-time picker modal */
 .dtp-grid {
@@ -866,23 +750,6 @@ body.light .docs-preview-editor { color: var(--editor-fg); }
   color: var(--text);
 }
 .dtp-title { flex: 1; text-align: center; font-size: 1.0769rem; font-weight: 650; }
-
-.switch { position: relative; display: inline-block; width: 38px; height: 22px; flex: none; }
-.switch input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
-.switch span {
-  position: absolute; inset: 0;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--pane-3);
-  transition: background 120ms ease, border-color 120ms ease;
-}
-.switch span::after {
-  content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px;
-  border-radius: 50%; background: var(--text-2);
-  transition: transform 120ms ease, background 120ms ease;
-}
-.switch input:checked + span { background: color-mix(in oklab, var(--blue), transparent 70%); border-color: color-mix(in oklab, var(--blue), transparent 42%); }
-.switch input:checked + span::after { transform: translateX(16px); background: var(--text); }
 
 /* pane headers: long index/doc names clip instead of wrapping */
 .editor-head strong,

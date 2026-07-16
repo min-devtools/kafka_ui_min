@@ -880,7 +880,7 @@ fn consume_impl(
     from_offset: Option<i64>,
     from_ts: Option<i64>,
 ) -> Result<Vec<MessageRec>, String> {
-    let limit = limit.clamp(1, 2000);
+    let limit = limit.clamp(1, 10_000);
     let consumer = make_consumer(conn, INSPECT_GROUP)?;
     let md = consumer
         .fetch_metadata(Some(topic), TIMEOUT)

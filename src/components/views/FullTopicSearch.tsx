@@ -32,12 +32,14 @@ type SearchState = "idle" | "running" | "completed" | "cancelled" | "failed";
 export function FullTopicSearch({
   active,
   initialTopic,
+  initialText = "",
   jsFilters,
   onEditFilters,
   onBrowse,
 }: {
   active: boolean;
   initialTopic: string;
+  initialText?: string;
   jsFilters: JsFilter[];
   onEditFilters: () => void;
   onBrowse: () => void;
@@ -46,7 +48,7 @@ export function FullTopicSearch({
   const meta = useClusterMeta();
   const { selectMsg, selectedMsg, showToast } = useApp();
   const [topic, setTopic] = useState(initialTopic);
-  const [text, setText] = useState("");
+  const [text, setText] = useState(initialText);
   const [conditions, setConditions] = useState<SearchCondition[]>([]);
   const [results, setResults] = useState<MessageRec[]>([]);
   const [acceptedCount, setAcceptedCount] = useState(0);
@@ -208,7 +210,13 @@ export function FullTopicSearch({
       </div>
       <div className="full-search-controls">
         <Combobox value={topic} options={topicOptions} placeholder="— topic —" onChange={setTopic} />
-        <input className="index-search" placeholder="Search key or payload" value={text} onChange={(event) => setText(event.target.value)} />
+        <input
+          className="index-search"
+          placeholder="Search key or payload — scans the whole topic, case-insensitive"
+          title="Plain substring match against key and payload across every partition. Add Conditions or JS filters for field-level matching."
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+        />
         <ToolButton onClick={() => setConditions((items) => [...items, { field: "value.", operator: "equals", value: "" }])}>
           <Icon name="plus" /> Condition
         </ToolButton>

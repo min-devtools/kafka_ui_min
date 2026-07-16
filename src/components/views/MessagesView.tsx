@@ -54,7 +54,8 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
 
   const [topic, setTopic] = useState(tabTopic);
   const [partition, setPartition] = useState<number | null>(null);
-  const [limit, setLimit] = useState(100);
+  const [limitStr, setLimitStr] = useState("100");
+  const limit = Math.min(10_000, Math.max(1, parseInt(limitStr, 10) || 100));
   const [from, setFrom] = useState<ConsumeFrom>("end");
   const [fromOffset, setFromOffset] = useState("");
   const [fromTime, setFromTime] = useState("");
@@ -149,6 +150,16 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
     setMessageFields([...paths]);
   }, [messages, active]);
 
+  // auto-load newest messages once per topic when the tab is visible
+  const autoLoadedTopic = useRef<string | null>(null);
+  useEffect(() => {
+    if (!active || !conn || !topic || loading || messages !== null) return;
+    if (autoLoadedTopic.current === topic) return; // one attempt per topic — no retry loop on error
+    autoLoadedTopic.current = topic;
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, conn, topic, messages, loading]);
+
   // ⌘↵ / titlebar play bump runNonce — only the active tab loads
   const runNonce = useApp((s) => s.runNonce);
   const prevNonce = useRef(runNonce);
@@ -219,6 +230,7 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
         <FullTopicSearch
           active={active}
           initialTopic={topic}
+          initialText={filter.trim()}
           jsFilters={jsFilters}
           onEditFilters={openNewFilter}
           onBrowse={() => setMode("browse")}
@@ -248,7 +260,7 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
     >
       <LoadingBar active={loading} />
       {/* row 1 — source: topic / partition / limit / order */}
-      <div className="index-searchbar" style={{ gridTemplateColumns: `minmax(200px, 300px) auto auto auto${from === "offset" || from === "timestamp" ? " auto" : ""} 1fr auto` }}>
+      <div className="index-searchbar" style={{ gridTemplateColumns: `minmax(260px, 460px) auto auto auto${from === "offset" || from === "timestamp" ? " auto" : ""} 1fr auto` }}>
         <Combobox
           value={topic}
           options={topicOptions}
@@ -270,10 +282,16 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
             <option key={i} value={i}>p{i}</option>
           ))}
         </select>
-        <select className="index-search" style={{ width: 100 }} value={limit} onChange={(e) => setLimit(Number(e.target.value))}>
-          {[50, 100, 250, 500, 1000].map((n) => <option key={n} value={n}>{n} msgs</option>)}
-        </select>
-        <select className="index-search" style={{ width: 130 }} value={from} onChange={(e) => setFrom(e.target.value as ConsumeFrom)}>
+        {/* Combobox instead of native datalist — WKWebView datalist popups stick open / hide options */}
+        <div style={{ width: 110 }} title="Messages to fetch — pick a preset or type any number (1–10000)">
+          <Combobox
+            freeText
+            value={limitStr}
+            options={[50, 100, 250, 500, 1000, 5000, 10000].map((n) => ({ value: String(n) }))}
+            onChange={(v) => setLimitStr(v.replace(/[^0-9]/g, "") || "100")}
+          />
+        </div>
+        <select className="index-search" style={{ width: 140 }} value={from} onChange={(e) => setFrom(e.target.value as ConsumeFrom)}>
           <option value="end">newest</option>
           <option value="start">oldest</option>
           <option value="offset">from offset</option>
@@ -310,7 +328,8 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
       <div className="index-searchbar" style={{ gridTemplateColumns: "minmax(220px, 1fr) minmax(180px, 280px) auto minmax(0, 1fr)" }}>
         <input
           className="index-search"
-          placeholder="Search key or payload"
+          placeholder={`Filter ${messages?.length ?? 0} loaded messages (key/payload)`}
+          title="Filters only the messages already loaded in this view — use Full search to scan the whole topic"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
         />
@@ -392,7 +411,7 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
         {!conn && <div className="empty-note">Connect to a cluster first.</div>}
         {loading && <div className="empty-note">Loading messages…</div>}
         {conn && messages === null && !loading && (
-          <div className="empty-note">Pick a topic and press ⌘↵ (or the play button up top) — messages are fetched read-only, no offsets are committed.</div>
+          <div className="empty-note">Pick a topic — newest messages load automatically (⌘↵ or the play button reloads). Fetches are read-only, no offsets are committed.</div>
         )}
         {messages !== null && (
           <table>
@@ -432,7 +451,16 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
                 </tr>
               ))}
               {rows.length === 0 && (
-                <tr><td colSpan={5 + paths.length}>No messages{q ? " match the filter" : ""}.</td></tr>
+                <tr>
+                  <td colSpan={5 + paths.length}>
+                    No messages{q ? ` match "${filter.trim()}" in the ${messages?.length ?? 0} loaded here` : ""}.{" "}
+                    {q && (
+                      <ToolButton onClick={() => setMode("search")}>
+                        <Icon name="search" /> Search entire topic for “{filter.trim()}”
+                      </ToolButton>
+                    )}
+                  </td>
+                </tr>
               )}
             </tbody>
           </table>

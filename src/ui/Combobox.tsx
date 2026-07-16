@@ -11,10 +11,12 @@ interface Props {
   placeholder?: string;
   onChange: (value: string) => void;
   id?: string;
+  /** commit whatever the user typed on blur instead of reverting to `value` */
+  freeText?: boolean;
 }
 
 /** Searchable dropdown: type to filter, ↑↓ + Enter, click to pick. */
-export function Combobox({ value, options, placeholder, onChange, id }: Props) {
+export function Combobox({ value, options, placeholder, onChange, id, freeText }: Props) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState(value);
   const [typed, setTyped] = useState(false);
@@ -62,6 +64,7 @@ export function Combobox({ value, options, placeholder, onChange, id }: Props) {
           e.target.select();
         }}
         onBlur={() => {
+          if (freeText && typed && text.trim() && text !== value) onChange(text.trim());
           setOpen(false);
           setTyped(false);
         }}
