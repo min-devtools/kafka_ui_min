@@ -27,18 +27,31 @@ export function Sidebar() {
   const groups = useGroups();
   const queryClient = useQueryClient();
   const {
-    connections, activeConnId, setActiveConn, deleteConnection, setEditingConn,
+    connections, activeConnId, setActiveConn, deleteConnection, setEditingConn, setConnections,
     tabs, activeTabId, openTab, activeTopic, setActiveTopic, showToast,
     openMessagesTab, topicRecency,
   } = useApp(
     useShallow((s) => ({
       connections: s.connections, activeConnId: s.activeConnId, setActiveConn: s.setActiveConn,
-      deleteConnection: s.deleteConnection, setEditingConn: s.setEditingConn, tabs: s.tabs,
-      activeTabId: s.activeTabId, openTab: s.openTab, activeTopic: s.activeTopic,
+      deleteConnection: s.deleteConnection, setEditingConn: s.setEditingConn, setConnections: s.setConnections,
+      tabs: s.tabs, activeTabId: s.activeTabId, openTab: s.openTab, activeTopic: s.activeTopic,
       setActiveTopic: s.setActiveTopic, showToast: s.showToast,
       openMessagesTab: s.openMessagesTab, topicRecency: s.topicRecency,
     })),
   );
+  // drag-reorder state for the Connections group — pattern matches redis_min Sidebar
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ id: string; before: boolean } | null>(null);
+  const reorderConn = (from: string, beforeId: string | null) => {
+    if (from === beforeId) return;
+    const dragged = connections.find((c) => c.id === from);
+    if (!dragged) return;
+    const rest = connections.filter((c) => c.id !== from);
+    const idx = beforeId ? rest.findIndex((c) => c.id === beforeId) : -1;
+    setConnections(idx < 0 ? [...rest, dragged] : [...rest.slice(0, idx), dragged, ...rest.slice(idx)]);
+  };
+  const draggedConnId = (event: React.DragEvent) =>
+    event.dataTransfer.getData("application/x-kafkamin-conn") || dragId;
 
   // keyboard/AT support for the clickable divs: Enter/Space activates
   const pressable = (onClick: () => void) => ({
@@ -112,6 +125,23 @@ export function Sidebar() {
       </div>
       <div className="side-scroll">
         <div className="group">
+          <div className="group-title"><span>Workspace</span><span /></div>
+          {WORKSPACE_NAV.map((item) => (
+            <div
+              key={item.kind}
+              className={`nav-item ${activeKind === item.kind ? "active" : ""}`}
+              {...pressable(() => openTab(item.kind))}
+            >
+              <Icon name={item.icon} className={item.iconClass} />
+              <span>{item.label}</span>
+              <span>
+                {item.meta?.startsWith("⌘") ? <span className="kbd">{item.meta}</span> : item.meta ?? ""}
+              </span>
+            </div>
+          ))}
+        </div>
+
+        <div className="group">
           <div className="group-title"><span>Connections</span><span>{connections.length ? "saved" : ""}</span></div>
           <div
             className={`nav-item ${activeKind === "connection" ? "active" : ""}`}
@@ -125,7 +155,8 @@ export function Sidebar() {
           {connections.map((c) => (
             <div
               key={c.id}
-              className={`nav-item ${c.id === activeConnId ? "active" : ""}`}
+              draggable
+              className={`nav-item ${c.id === activeConnId ? "active" : ""} ${dragId === c.id ? "dragging" : ""} ${dropTarget?.id === c.id && dragId && dragId !== c.id ? (dropTarget.before ? "drop-before" : "drop-after") : ""}`}
               {...pressable(() => {
                 setActiveConn(c.id);
                 void queryClient.invalidateQueries();
@@ -134,29 +165,44 @@ export function Sidebar() {
                 e.preventDefault();
                 setConnMenu({ x: e.clientX, y: e.clientY, id: c.id });
               }}
+              onDragStart={(e) => {
+                setDragId(c.id);
+                e.dataTransfer.effectAllowed = "move";
+                e.dataTransfer.setData("application/x-kafkamin-conn", c.id);
+              }}
+              onDragEnd={() => { setDragId(null); setDropTarget(null); }}
+              onDragOver={(e) => {
+                if (!dragId || dragId === c.id) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "move";
+                const rect = e.currentTarget.getBoundingClientRect();
+                setDropTarget({ id: c.id, before: e.clientY < rect.top + rect.height / 2 });
+              }}
+              onDragLeave={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                  setDropTarget((t) => (t?.id === c.id ? null : t));
+                }
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                const id = draggedConnId(e);
+                if (id && id !== c.id) {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const before = e.clientY < rect.top + rect.height / 2;
+                  const nextId = before
+                    ? c.id
+                    : connections[connections.findIndex((cc) => cc.id === c.id) + 1]?.id ?? null;
+                  reorderConn(id, nextId);
+                }
+                setDragId(null);
+                setDropTarget(null);
+              }}
             >
               <Icon name="status" className={c.id === activeConnId ? "soft-green" : undefined} />
               <span>{c.name}</span>
               <Badge tone={c.id === activeConnId ? (meta.isError ? "red" : meta.data ? "green" : "idle") : "idle"}>
                 {c.id === activeConnId ? (meta.isError ? "error" : meta.data ? "up" : "connecting…") : "idle"}
               </Badge>
-            </div>
-          ))}
-        </div>
-
-        <div className="group">
-          <div className="group-title"><span>Workspace</span><span /></div>
-          {WORKSPACE_NAV.map((item) => (
-            <div
-              key={item.kind}
-              className={`nav-item ${activeKind === item.kind ? "active" : ""}`}
-              {...pressable(() => openTab(item.kind))}
-            >
-              <Icon name={item.icon} className={item.iconClass} />
-              <span>{item.label}</span>
-              <span>
-                {item.meta?.startsWith("⌘") ? <span className="kbd">{item.meta}</span> : item.meta ?? ""}
-              </span>
             </div>
           ))}
         </div>
