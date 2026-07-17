@@ -123,6 +123,7 @@ export type TabKind =
   | "connection"
   | "topics"
   | "groups"
+  | "group"
   | "messages"
   | "cluster"
   | "produce"
@@ -138,4 +139,8 @@ export interface TabDef {
 
 export interface MessagesTabState {
   topic: string;
+}
+
+export interface GroupTabState {
+  group: string;
 }

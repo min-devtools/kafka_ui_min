@@ -60,7 +60,9 @@ export async function initPersistence(): Promise<void> {
       s.tabs !== prev.tabs ||
       s.activeTabId !== prev.activeTabId ||
       s.msgTabs !== prev.msgTabs ||
-      s.activeTopic !== prev.activeTopic
+      s.groupTabs !== prev.groupTabs ||
+      s.activeTopic !== prev.activeTopic ||
+      s.topicRecency !== prev.topicRecency
     ) {
       localStorage.setItem(
         "kafkamin:session",
@@ -68,8 +70,10 @@ export async function initPersistence(): Promise<void> {
           tabs: s.tabs,
           activeTabId: s.activeTabId,
           activeTopic: s.activeTopic,
+          topicRecency: s.topicRecency,
           msgTabCounter: s.msgTabCounter,
           msgTabs: s.msgTabs,
+          groupTabs: s.groupTabs,
         }),
       );
     }

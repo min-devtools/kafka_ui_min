@@ -1535,6 +1535,7 @@ pub fn run() {
         .manage(SearchRegistry::default())
         .manage(ConsumerCache::default())
         .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![

@@ -15,6 +15,7 @@ import { WelcomeView } from "./components/views/WelcomeView";
 import { ConnectionView } from "./components/views/ConnectionView";
 import { TopicsView } from "./components/views/TopicsView";
 import { GroupsView } from "./components/views/GroupsView";
+import { GroupDetailView } from "./components/views/GroupDetailView";
 import { ClusterView } from "./components/views/ClusterView";
 import { ProduceView } from "./components/views/ProduceView";
 import { MessagesView } from "./components/views/MessagesView";
@@ -32,6 +33,7 @@ function renderView(tab: TabDef, active: boolean) {
     case "connection": return <ConnectionView key={tab.id} active={active} />;
     case "topics": return <TopicsView key={tab.id} active={active} />;
     case "groups": return <GroupsView key={tab.id} active={active} />;
+    case "group": return <GroupDetailView key={tab.id} tabId={tab.id} active={active} />;
     case "messages": return <MessagesView key={tab.id} tabId={tab.id} active={active} />;
     case "cluster": return <ClusterView key={tab.id} active={active} />;
     case "produce": return <ProduceView key={tab.id} active={active} />;

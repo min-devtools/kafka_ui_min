@@ -1,13 +1,14 @@
 import { create } from "zustand";
 import { isThemeId, themeBase } from "./lib/themes";
 import { clampFontSize, DEFAULT_FONT_SIZE } from "./lib/fontScale";
-import type { Connection, MessageRec, MessagesTabState, TabDef, TabKind } from "./lib/types";
+import type { Connection, GroupTabState, MessageRec, MessagesTabState, TabDef, TabKind } from "./lib/types";
 
 const TAB_META: Record<TabKind, { title: string; icon: TabDef["icon"]; iconClass: string }> = {
   welcome: { title: "Welcome", icon: "sparkles", iconClass: "soft-blue" },
   connection: { title: "New Connection", icon: "plug", iconClass: "soft-blue" },
   topics: { title: "Topics", icon: "topics", iconClass: "soft-orange" },
   groups: { title: "Consumer Groups", icon: "groups", iconClass: "soft-green" },
+  group: { title: "Group", icon: "groups", iconClass: "soft-green" },
   messages: { title: "Messages", icon: "docs", iconClass: "soft-blue" },
   cluster: { title: "Cluster", icon: "cluster", iconClass: "soft-green" },
   produce: { title: "Produce", icon: "send", iconClass: "soft-green" },
@@ -23,8 +24,10 @@ function loadSession(): {
   tabs: TabDef[];
   activeTabId: string;
   msgTabs: Record<string, MessagesTabState>;
+  groupTabs: Record<string, GroupTabState>;
   msgTabCounter: number;
   activeTopic: string | null;
+  topicRecency: string[];
 } | null {
   try {
     const raw = localStorage.getItem("kafkamin:session");
@@ -35,22 +38,31 @@ function loadSession(): {
     for (const [id, mt] of Object.entries<any>(s.msgTabs ?? {})) {
       msgTabs[id] = { topic: typeof mt.topic === "string" ? mt.topic : "" };
     }
+    const groupTabs: Record<string, GroupTabState> = {};
+    for (const [id, gt] of Object.entries<any>(s.groupTabs ?? {})) {
+      if (typeof gt.group === "string" && gt.group) groupTabs[id] = { group: gt.group };
+    }
     const tabs: TabDef[] = s.tabs
-      .filter((t: TabDef) => TAB_META[t.kind] && (t.kind !== "messages" || msgTabs[t.id]))
+      .filter((t: TabDef) =>
+        TAB_META[t.kind] && (t.kind !== "messages" || msgTabs[t.id]) && (t.kind !== "group" || groupTabs[t.id]))
       .map((t: TabDef) => ({
         ...t,
         icon: TAB_META[t.kind].icon,
         iconClass: TAB_META[t.kind].iconClass,
         // re-derive messages titles so stale "Messages · topic" prefixes from old sessions die
-        title: t.kind === "messages" ? msgTabTitle(msgTabs[t.id].topic) : t.title,
+        title: t.kind === "messages" ? msgTabTitle(msgTabs[t.id].topic) : t.kind === "group" ? groupTabs[t.id].group : t.title,
       }));
     if (!tabs.length) return null;
     return {
       tabs,
       activeTabId: tabs.some((t) => t.id === s.activeTabId) ? s.activeTabId : tabs[0].id,
       msgTabs,
+      groupTabs,
       msgTabCounter: Number(s.msgTabCounter) || 0,
       activeTopic: typeof s.activeTopic === "string" ? s.activeTopic : null,
+      topicRecency: Array.isArray(s.topicRecency)
+        ? s.topicRecency.filter((t: unknown) => typeof t === "string")
+        : [],
     };
   } catch {
     return null;
@@ -81,6 +93,7 @@ interface AppState {
   tabs: TabDef[];
   activeTabId: string;
   msgTabs: Record<string, MessagesTabState>;
+  groupTabs: Record<string, GroupTabState>;
   msgTabCounter: number;
 
   activeTopic: string | null;
@@ -117,6 +130,7 @@ interface AppState {
 
   openTab: (kind: TabKind) => void;
   openMessagesTab: (topic?: string) => string;
+  openGroupTab: (group: string) => void;
   closeTab: (id: string) => void;
   activateTab: (id: string) => void;
   reorderTab: (id: string, beforeId: string | null) => void;
@@ -161,10 +175,11 @@ export const useApp = create<AppState>((set, get) => ({
   tabs: session?.tabs ?? [{ id: "welcome", kind: "welcome", ...TAB_META.welcome }],
   activeTabId: session?.activeTabId ?? "welcome",
   msgTabs: session?.msgTabs ?? {},
+  groupTabs: session?.groupTabs ?? {},
   msgTabCounter: session?.msgTabCounter ?? 0,
 
   activeTopic: session?.activeTopic ?? null,
-  topicRecency: [],
+  topicRecency: session?.topicRecency ?? [],
   selectedMsg: null,
   editingConnId: null,
 
@@ -236,6 +251,17 @@ export const useApp = create<AppState>((set, get) => ({
     return id;
   },
 
+  openGroupTab: (group) => {
+    const s = get();
+    const id = `group:${group}`;
+    if (s.tabs.some((t) => t.id === id)) return set({ activeTabId: id });
+    set({
+      tabs: [...s.tabs, { id, kind: "group", ...TAB_META.group, title: group }],
+      activeTabId: id,
+      groupTabs: { ...s.groupTabs, [id]: { group } },
+    });
+  },
+
   closeTab: (id) =>
     set((s) => {
       const idx = s.tabs.findIndex((t) => t.id === id);
@@ -243,6 +269,8 @@ export const useApp = create<AppState>((set, get) => ({
       const tabs = s.tabs.filter((t) => t.id !== id);
       const msgTabs = { ...s.msgTabs };
       delete msgTabs[id];
+      const groupTabs = { ...s.groupTabs };
+      delete groupTabs[id];
       // renumber from 1 again once the last messages tab closes, instead of counting up forever
       const msgTabCounter = tabs.some((t) => t.kind === "messages") ? s.msgTabCounter : 0;
       let activeTabId = s.activeTabId;
@@ -255,10 +283,11 @@ export const useApp = create<AppState>((set, get) => ({
           tabs: [{ id: "welcome", kind: "welcome", ...TAB_META.welcome }],
           activeTabId: "welcome",
           msgTabs,
+          groupTabs,
           msgTabCounter,
         };
       }
-      return { tabs, activeTabId, msgTabs, msgTabCounter };
+      return { tabs, activeTabId, msgTabs, groupTabs, msgTabCounter };
     }),
 
   activateTab: (id) => set({ activeTabId: id }),

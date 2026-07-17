@@ -236,17 +236,19 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
   const deferredFilter = useDeferredValue(filter);
   const q = deferredFilter.trim().toLowerCase();
   const needJson = paths.length > 0 || activeFns.length > 0;
+  // parse once per load, not on every filter/sort recompute
+  const parsed = useMemo(() => (messages ?? []).map((m) => tryParse(m.payload)), [messages]);
   const rows: Row[] = useMemo(
     () =>
       (messages ?? [])
+        .map((m, i): Row => (needJson ? { ...m, json: parsed[i] } : m))
         .filter(
           (m) =>
             !q ||
             m.payload.toLowerCase().includes(q) ||
             (m.key ?? "").toLowerCase().includes(q),
         )
-        .map((m) => (needJson ? { ...m, json: tryParse(m.payload) } : m))
-        .filter((r: Row) =>
+        .filter((r) =>
           activeFns.every((fn) => {
             try {
               return !!fn(r.json, r.key, r.partition, r.offset, r.timestamp, Object.fromEntries(r.headers));
@@ -255,7 +257,7 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
             }
           }),
         ),
-    [messages, q, needJson, activeFns],
+    [messages, parsed, q, needJson, activeFns],
   );
 
   const { sorted, sort, cycleSort } = useSortedRows<Row>(rows, (r, col) => {

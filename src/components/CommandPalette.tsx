@@ -20,7 +20,7 @@ export function CommandPalette() {
   const app = useApp(
     useShallow((s) => ({
       commandOpen: s.commandOpen, connections: s.connections, openTab: s.openTab,
-      openMessagesTab: s.openMessagesTab, setEditingConn: s.setEditingConn, toggleLeft: s.toggleLeft,
+      openMessagesTab: s.openMessagesTab, openGroupTab: s.openGroupTab, setEditingConn: s.setEditingConn, toggleLeft: s.toggleLeft,
       toggleRight: s.toggleRight, toggleTheme: s.toggleTheme, toggleCompact: s.toggleCompact,
       setActiveConn: s.setActiveConn, setActiveTopic: s.setActiveTopic, setCommandOpen: s.setCommandOpen,
     })),
@@ -70,7 +70,7 @@ export function CommandPalette() {
       base.push({
         icon: "groups",
         label: `Open group: ${g.name}`,
-        action: () => app.openTab("groups"),
+        action: () => app.openGroupTab(g.name),
       });
     }
     return base;
