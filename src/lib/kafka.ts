@@ -3,6 +3,7 @@ import type {
   ClusterMeta,
   Connection,
   GroupInfo,
+  GroupMember,
   GroupOffset,
   MessageRec,
   PartitionOffsets,
@@ -32,6 +33,9 @@ export const fetchGroups = (conn: Connection) =>
 
 export const fetchGroupOffsets = (conn: Connection, group: string) =>
   invoke<GroupOffset[]>("kafka_group_offsets", { conn: wire(conn), group });
+
+export const fetchGroupMembers = (conn: Connection, group: string) =>
+  invoke<GroupMember[]>("kafka_group_members", { conn: wire(conn), group });
 
 export type ConsumeFrom = "end" | "start" | "offset" | "timestamp";
 
@@ -103,8 +107,8 @@ export const resetOffsets = (
   conn: Connection,
   group: string,
   topic: string,
-  to: "earliest" | "latest" | "offset",
-  opts?: { partition?: number | null; offset?: number | null },
+  to: "earliest" | "latest" | "offset" | "timestamp",
+  opts?: { partition?: number | null; offset?: number | null; timestampMs?: number | null },
 ) =>
   invoke<GroupOffset[]>("kafka_reset_offsets", {
     conn: wire(conn),
@@ -113,4 +117,5 @@ export const resetOffsets = (
     to,
     partition: opts?.partition ?? null,
     offset: opts?.offset ?? null,
+    timestampMs: opts?.timestampMs ?? null,
   });

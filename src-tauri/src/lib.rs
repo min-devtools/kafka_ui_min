@@ -219,7 +219,10 @@ pub struct PartitionOffsets {
     pub high: i64,
 }
 
-fn topic_offsets_impl(consumer: &BaseConsumer, topic: &str) -> Result<Vec<PartitionOffsets>, String> {
+fn topic_offsets_impl(
+    consumer: &BaseConsumer,
+    topic: &str,
+) -> Result<Vec<PartitionOffsets>, String> {
     let md = consumer
         .fetch_metadata(Some(topic), TIMEOUT)
         .map_err(|e| e.to_string())?;
@@ -323,6 +326,84 @@ pub struct GroupInfo {
     pub members: i32,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupAssignment {
+    pub topic: String,
+    pub partitions: Vec<i32>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupMember {
+    pub member_id: String,
+    pub client_id: String,
+    pub client_host: String,
+    pub assignments: Vec<GroupAssignment>,
+}
+
+fn read_i16(bytes: &[u8], cursor: &mut usize) -> Option<i16> {
+    let value = i16::from_be_bytes(bytes.get(*cursor..*cursor + 2)?.try_into().ok()?);
+    *cursor += 2;
+    Some(value)
+}
+
+fn read_i32(bytes: &[u8], cursor: &mut usize) -> Option<i32> {
+    let value = i32::from_be_bytes(bytes.get(*cursor..*cursor + 4)?.try_into().ok()?);
+    *cursor += 4;
+    Some(value)
+}
+
+fn parse_member_assignment(bytes: Option<&[u8]>) -> Vec<GroupAssignment> {
+    let Some(bytes) = bytes else {
+        return Vec::new();
+    };
+    let mut cursor = 0;
+    if read_i16(bytes, &mut cursor).is_none() {
+        return Vec::new();
+    }
+    let Some(topic_count) = read_i32(bytes, &mut cursor) else {
+        return Vec::new();
+    };
+    if topic_count < 0 {
+        return Vec::new();
+    }
+    let mut assignments = Vec::with_capacity(topic_count as usize);
+    for _ in 0..topic_count {
+        let Some(topic_len) = read_i16(bytes, &mut cursor) else {
+            return Vec::new();
+        };
+        if topic_len < 0 {
+            return Vec::new();
+        }
+        let Some(topic_bytes) = bytes.get(cursor..cursor + topic_len as usize) else {
+            return Vec::new();
+        };
+        cursor += topic_len as usize;
+        let Ok(topic) = std::str::from_utf8(topic_bytes) else {
+            return Vec::new();
+        };
+        let Some(partition_count) = read_i32(bytes, &mut cursor) else {
+            return Vec::new();
+        };
+        if partition_count < 0 {
+            return Vec::new();
+        }
+        let mut partitions = Vec::with_capacity(partition_count as usize);
+        for _ in 0..partition_count {
+            let Some(partition) = read_i32(bytes, &mut cursor) else {
+                return Vec::new();
+            };
+            partitions.push(partition);
+        }
+        assignments.push(GroupAssignment {
+            topic: topic.to_string(),
+            partitions,
+        });
+    }
+    assignments
+}
+
 fn groups_impl(consumer: &BaseConsumer) -> Result<Vec<GroupInfo>, String> {
     let list = consumer
         .fetch_group_list(None, TIMEOUT)
@@ -349,6 +430,39 @@ async fn kafka_groups(
 ) -> Result<Vec<GroupInfo>, String> {
     let consumer = inspect_consumer(&cache, &conn)?;
     tauri::async_runtime::spawn_blocking(move || groups_impl(&consumer))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn group_members_impl(consumer: &BaseConsumer, group: &str) -> Result<Vec<GroupMember>, String> {
+    let groups = consumer
+        .fetch_group_list(Some(group), TIMEOUT)
+        .map_err(|e| e.to_string())?;
+    let group = groups
+        .groups()
+        .iter()
+        .find(|item| item.name() == group)
+        .ok_or_else(|| format!("consumer group not found: {group}"))?;
+    Ok(group
+        .members()
+        .iter()
+        .map(|member| GroupMember {
+            member_id: member.id().to_string(),
+            client_id: member.client_id().to_string(),
+            client_host: member.client_host().to_string(),
+            assignments: parse_member_assignment(member.assignment()),
+        })
+        .collect())
+}
+
+#[tauri::command]
+async fn kafka_group_members(
+    cache: State<'_, ConsumerCache>,
+    conn: KafkaConnection,
+    group: String,
+) -> Result<Vec<GroupMember>, String> {
+    let consumer = inspect_consumer(&cache, &conn)?;
+    tauri::async_runtime::spawn_blocking(move || group_members_impl(&consumer, &group))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -1023,7 +1137,10 @@ fn consume_impl(
         partitions = vec![p];
     }
     if partitions.is_empty() {
-        return Ok(ConsumeResult { messages: Vec::new(), partial: false });
+        return Ok(ConsumeResult {
+            messages: Vec::new(),
+            partial: false,
+        });
     }
 
     // "timestamp" resolves each partition's start via OffsetsForTimes in one call
@@ -1073,7 +1190,10 @@ fn consume_impl(
             .map_err(|e| e.to_string())?;
     }
     if target.is_empty() {
-        return Ok(ConsumeResult { messages: Vec::new(), partial: false });
+        return Ok(ConsumeResult {
+            messages: Vec::new(),
+            partial: false,
+        });
     }
     consumer.assign(&tpl).map_err(|e| e.to_string())?;
 
@@ -1129,7 +1249,10 @@ fn consume_impl(
         out.sort_by(|a, b| a.timestamp.cmp(&b.timestamp).then(a.offset.cmp(&b.offset)));
     }
     out.truncate(limit);
-    Ok(ConsumeResult { messages: out, partial })
+    Ok(ConsumeResult {
+        messages: out,
+        partial,
+    })
 }
 
 #[tauri::command]
@@ -1151,6 +1274,22 @@ async fn kafka_consume(
 
 /// Commit new offsets for a (topic, group). Fails if the group has active members —
 /// same rule as `kafka-consumer-groups --reset-offsets`.
+fn reset_target(
+    to: &str,
+    low: i64,
+    high: i64,
+    offset: Option<i64>,
+    timestamp_offset: Option<i64>,
+) -> Result<i64, String> {
+    match to {
+        "earliest" => Ok(low),
+        "latest" => Ok(high),
+        "offset" => Ok(offset.ok_or("offset value required")?.clamp(low, high)),
+        "timestamp" => Ok(timestamp_offset.unwrap_or(high).clamp(low, high)),
+        other => Err(format!("unknown reset target: {other}")),
+    }
+}
+
 fn reset_offsets_impl(
     conn: &KafkaConnection,
     group: &str,
@@ -1158,6 +1297,7 @@ fn reset_offsets_impl(
     to: &str,
     partition: Option<i32>,
     offset: Option<i64>,
+    timestamp_ms: Option<i64>,
 ) -> Result<Vec<GroupOffset>, String> {
     let consumer = make_consumer(conn, group)?;
     let md = consumer
@@ -1171,18 +1311,31 @@ fn reset_offsets_impl(
     if let Some(p) = partition {
         partitions = vec![p];
     }
+    let mut timestamp_offsets = HashMap::new();
+    if to == "timestamp" {
+        let timestamp_ms = timestamp_ms.ok_or("timestamp value required")?;
+        let mut timestamps = TopicPartitionList::new();
+        for &p in &partitions {
+            timestamps
+                .add_partition_offset(topic, p, Offset::Offset(timestamp_ms))
+                .map_err(|e| e.to_string())?;
+        }
+        let resolved = consumer
+            .offsets_for_times(timestamps, TIMEOUT)
+            .map_err(|e| e.to_string())?;
+        for element in resolved.elements() {
+            if let Offset::Offset(value) = element.offset() {
+                timestamp_offsets.insert(element.partition(), value);
+            }
+        }
+    }
     let mut tpl = TopicPartitionList::new();
     let mut result = Vec::new();
     for p in partitions {
         let (low, high) = consumer
             .fetch_watermarks(topic, p, TIMEOUT)
             .map_err(|e| e.to_string())?;
-        let target = match to {
-            "earliest" => low,
-            "latest" => high,
-            "offset" => offset.ok_or("offset value required")?.clamp(low, high),
-            other => return Err(format!("unknown reset target: {other}")),
-        };
+        let target = reset_target(to, low, high, offset, timestamp_offsets.get(&p).copied())?;
         tpl.add_partition_offset(topic, p, Offset::Offset(target))
             .map_err(|e| e.to_string())?;
         result.push(GroupOffset {
@@ -1209,9 +1362,10 @@ async fn kafka_reset_offsets(
     to: String,
     partition: Option<i32>,
     offset: Option<i64>,
+    timestamp_ms: Option<i64>,
 ) -> Result<Vec<GroupOffset>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        reset_offsets_impl(&conn, &group, &topic, &to, partition, offset)
+        reset_offsets_impl(&conn, &group, &topic, &to, partition, offset, timestamp_ms)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1389,6 +1543,7 @@ pub fn run() {
             kafka_topic_stats,
             kafka_groups,
             kafka_group_offsets,
+            kafka_group_members,
             kafka_consume,
             kafka_search_start,
             kafka_search_cancel,
@@ -1574,6 +1729,19 @@ mod tests {
         assert!(!contains_ci("hi", "paid"));
         // non-ascii needle falls back to unicode lowercase
         assert!(contains_ci("XIN CHÀO", "chào"));
+    }
+
+    #[test]
+    fn reset_target_resolves_watermarks_offsets_and_timestamps() {
+        assert_eq!(reset_target("earliest", 10, 50, None, None).unwrap(), 10);
+        assert_eq!(reset_target("latest", 10, 50, None, None).unwrap(), 50);
+        assert_eq!(reset_target("offset", 10, 50, Some(7), None).unwrap(), 10);
+        assert_eq!(reset_target("offset", 10, 50, Some(77), None).unwrap(), 50);
+        assert_eq!(
+            reset_target("timestamp", 10, 50, None, Some(32)).unwrap(),
+            32
+        );
+        assert_eq!(reset_target("timestamp", 10, 50, None, None).unwrap(), 50);
     }
 
     #[test]

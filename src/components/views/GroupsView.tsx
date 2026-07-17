@@ -6,11 +6,12 @@ import { Icon } from "../../ui/Icon";
 import { SortTh } from "../../ui/SortTh";
 import { useSortedRows } from "../../lib/useSort";
 import { useApp } from "../../store";
-import { useActiveConnection, useGroupOffsets, useGroups } from "../../lib/queries";
+import { useActiveConnection, useGroupMembers, useGroupOffsets, useGroups } from "../../lib/queries";
 import { deleteGroup, resetOffsets } from "../../lib/kafka";
 import type { GroupInfo, GroupOffset } from "../../lib/types";
+import { DateTimeModal, toLocalStamp } from "../../ui/DateTimeModal";
 
-function OffsetTable({ rows }: { rows: GroupOffset[] }) {
+function OffsetTable({ rows, resetting, onReset }: { rows: GroupOffset[]; resetting: boolean; onReset: (row: GroupOffset, to: "earliest" | "latest" | "offset" | "timestamp") => void }) {
   const { sorted, sort, cycleSort } = useSortedRows<GroupOffset>(rows, (r, col) =>
     r[col as "partition" | "committed" | "high" | "lag"],
   );
@@ -22,6 +23,7 @@ function OffsetTable({ rows }: { rows: GroupOffset[] }) {
           <SortTh col="committed" sort={sort} onSort={cycleSort}>Committed</SortTh>
           <SortTh col="high" sort={sort} onSort={cycleSort}>High</SortTh>
           <SortTh col="lag" sort={sort} onSort={cycleSort}>Lag</SortTh>
+          <th style={{ width: 290 }}>Actions</th>
         </tr>
       </thead>
       <tbody>
@@ -31,6 +33,12 @@ function OffsetTable({ rows }: { rows: GroupOffset[] }) {
             <td>{o.committed}</td>
             <td>{o.high}</td>
             <td style={{ color: o.lag > 0 ? "var(--orange)" : "var(--green)" }}>{o.lag}</td>
+            <td style={{ whiteSpace: "nowrap" }}>
+              <ToolButton disabled={resetting} title="Reset this partition to earliest" onClick={() => onReset(o, "earliest")}><Icon name="chevrons-left" /></ToolButton>
+              <ToolButton disabled={resetting} title="Reset this partition to latest" onClick={() => onReset(o, "latest")}><Icon name="chevrons-right" /></ToolButton>
+              <ToolButton disabled={resetting} title="Reset this partition to an offset" onClick={() => onReset(o, "offset")}><Icon name="pencil" /></ToolButton>
+              <ToolButton disabled={resetting} title="Reset this partition to a timestamp" onClick={() => onReset(o, "timestamp")}><Icon name="history" /></ToolButton>
+            </td>
           </tr>
         ))}
       </tbody>
@@ -42,9 +50,11 @@ export function GroupsView({ active }: { active: boolean }) {
   const [filter, setFilter] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
   const [resetting, setResetting] = useState(false);
+  const [timestampReset, setTimestampReset] = useState<{ topic: string; partition: number | null } | null>(null);
   const conn = useActiveConnection();
   const groups = useGroups();
   const offsets = useGroupOffsets(selected);
+  const members = useGroupMembers(selected);
   const queryClient = useQueryClient();
   const showToast = useApp((s) => s.showToast);
   const openDialog = useApp((s) => s.openDialog);
@@ -55,20 +65,23 @@ export function GroupsView({ active }: { active: boolean }) {
     col === "name" ? r.name : col === "state" ? r.state : r.members,
   );
 
-  const doReset = async (topic: string, to: "earliest" | "latest") => {
+  const doReset = async (topic: string, partition: number | null, to: "earliest" | "latest" | "offset" | "timestamp", value?: number) => {
     if (!conn || !selected) return;
+    const scope = partition == null ? "every partition" : `partition ${partition}`;
+    const target = to === "offset" ? `offset ${value}` : to === "timestamp" ? new Date(value!).toLocaleString() : to;
     const confirmed = await openDialog({
-      kind: "confirm",
-      title: `Reset ${selected} → ${to}`,
-      message: `Commit ${to} offsets for every partition of "${topic}". The group must have no active members.`,
-      confirmLabel: `Reset to ${to}`,
+      kind: "confirm", title: `Reset ${selected} → ${target}`,
+      message: `Commit ${target} for ${scope} of "${topic}". The group must have no active members.`,
+      confirmLabel: "Reset offsets",
       danger: true,
     });
     if (!confirmed) return;
     setResetting(true);
     try {
-      await resetOffsets(conn, selected, topic, to);
-      showToast("Offsets reset", `${selected} · ${topic} → ${to}.`);
+      await resetOffsets(conn, selected, topic, to, { partition, offset: to === "offset" ? value : null, timestampMs: to === "timestamp" ? value : null });
+      showToast("Offsets reset", `${selected} · ${topic} · ${scope} → ${target}.`);
+      void queryClient.invalidateQueries({ queryKey: ["groups"] });
+      void queryClient.invalidateQueries({ queryKey: ["group-members"] });
       void queryClient.invalidateQueries({ queryKey: ["group-offsets"] });
     } catch (err) {
       showToast("Reset failed", String(err), "err");
@@ -77,12 +90,12 @@ export function GroupsView({ active }: { active: boolean }) {
     }
   };
 
-  const doResetCustom = async (topic: string) => {
-    if (!conn || !selected) return;
+  const doResetCustom = async (topic: string, partition: number | null) => {
+    if (!selected) return;
     const raw = await openDialog({
       kind: "prompt",
       title: `Reset ${selected} · ${topic} to offset`,
-      message: "Committed to every partition of the topic (clamped to each partition's low/high watermark).",
+      message: `Committed to ${partition == null ? "every partition" : `partition ${partition}`} (clamped to its low/high watermark).`,
       defaultValue: "0",
       confirmLabel: "Reset",
       danger: true,
@@ -93,16 +106,13 @@ export function GroupsView({ active }: { active: boolean }) {
       showToast("Invalid offset", "Enter a non-negative number.", "warn");
       return;
     }
-    setResetting(true);
-    try {
-      await resetOffsets(conn, selected, topic, "offset", { offset: Math.floor(target) });
-      showToast("Offsets reset", `${selected} · ${topic} → ${Math.floor(target)}.`);
-      void queryClient.invalidateQueries({ queryKey: ["group-offsets"] });
-    } catch (err) {
-      showToast("Reset failed", String(err), "err");
-    } finally {
-      setResetting(false);
-    }
+    await doReset(topic, partition, "offset", Math.floor(target));
+  };
+
+  const requestReset = (topic: string, partition: number | null, to: "earliest" | "latest" | "offset" | "timestamp") => {
+    if (to === "offset") void doResetCustom(topic, partition);
+    else if (to === "timestamp") setTimestampReset({ topic, partition });
+    else void doReset(topic, partition, to);
   };
 
   const removeGroup = async () => {
@@ -181,6 +191,21 @@ export function GroupsView({ active }: { active: boolean }) {
                 <Icon name="trash" /> Delete group
               </ToolButton>
             </div>
+            <div style={{ margin: "12px 0" }}>
+              <h3>Members ({members.data?.length ?? 0})</h3>
+              {members.isLoading && <div className="empty-note">Loading group members…</div>}
+              {members.isError && <div className="empty-note">Unable to load group members.</div>}
+              {members.data?.length === 0 && <div className="empty-note">No active members.</div>}
+              {(members.data ?? []).map((member) => (
+                <div key={member.memberId} className="panel" style={{ margin: "6px 0", padding: 10 }}>
+                  <strong>{member.clientId || member.memberId}</strong>
+                  <span style={{ marginLeft: 8, color: "var(--muted)" }}>{member.clientHost}</span>
+                  <div style={{ marginTop: 5, fontFamily: "var(--font-mono)", fontSize: 12 }}>
+                    {member.assignments.length ? member.assignments.map((a) => `${a.topic} [${a.partitions.join(", ")}]`).join(" · ") : "No partition assignments."}
+                  </div>
+                </div>
+              ))}
+            </div>
             {offsets.isLoading && <div className="empty-note">Loading committed offsets…</div>}
             {offsets.data && offsets.data.length === 0 && (
               <div className="empty-note">No committed offsets for this group.</div>
@@ -190,22 +215,37 @@ export function GroupsView({ active }: { active: boolean }) {
                 <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0" }}>
                   <strong>{topic}</strong>
                   <span style={{ flex: 1 }} />
-                  <ToolButton disabled={resetting} title="Rewind group to the beginning of this topic" onClick={() => void doReset(topic, "earliest")}>
+                    <ToolButton disabled={resetting} title="Rewind group to the beginning of this topic" onClick={() => requestReset(topic, null, "earliest")}>
                     <Icon name="chevrons-left" /> Earliest
                   </ToolButton>
-                  <ToolButton disabled={resetting} title="Skip group to the end of this topic" onClick={() => void doReset(topic, "latest")}>
+                    <ToolButton disabled={resetting} title="Skip group to the end of this topic" onClick={() => requestReset(topic, null, "latest")}>
                     <Icon name="chevrons-right" /> Latest
                   </ToolButton>
-                  <ToolButton disabled={resetting} title="Commit a specific offset to every partition" onClick={() => void doResetCustom(topic)}>
+                    <ToolButton disabled={resetting} title="Commit a specific offset to every partition" onClick={() => requestReset(topic, null, "offset")}>
                     <Icon name="pencil" /> Custom…
-                  </ToolButton>
+                    </ToolButton>
+                    <ToolButton disabled={resetting} title="Commit offsets at a timestamp to every partition" onClick={() => requestReset(topic, null, "timestamp")}>
+                      <Icon name="history" /> Timestamp…
+                    </ToolButton>
                 </div>
-                <OffsetTable rows={(offsets.data ?? []).filter((o) => o.topic === topic)} />
+                <OffsetTable rows={(offsets.data ?? []).filter((o) => o.topic === topic)} resetting={resetting} onReset={(row, to) => requestReset(row.topic, row.partition, to)} />
               </div>
             ))}
           </div>
         )}
       </div>
+      {timestampReset && (
+        <DateTimeModal
+          value={toLocalStamp(new Date())}
+          onClose={() => setTimestampReset(null)}
+          onApply={(stamp) => {
+            const value = new Date(stamp).getTime();
+            const request = timestampReset;
+            setTimestampReset(null);
+            if (Number.isFinite(value)) void doReset(request.topic, request.partition, "timestamp", value);
+          }}
+        />
+      )}
     </section>
   );
 }

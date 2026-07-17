@@ -9,7 +9,7 @@ used by ElasticMin and RequestsMin.
 - Topics: partitions, replicas, low/high watermarks
 - Messages: tail newest/oldest N per topic or partition, client-side filter on key/payload, payload inspector (read-only — never commits offsets)
 - Full topic search: scans a finite low/high-watermark snapshot across every partition, supports text, JSON-field, metadata, header, and JavaScript filters, reports progress, and can be cancelled; results are paginated and capped at 10,000 for safety
-- Consumer groups: state, members, committed offsets, lag; reset offsets to earliest/latest (asks for confirmation, group must be empty)
+- Consumer groups: state, member assignments, committed offsets and lag; reset a topic or one partition to earliest, latest, an offset, or a timestamp (asks for confirmation, group must be empty)
 - Works with Redpanda out of the box — it speaks the Kafka wire protocol (default port 9092)
 
 ## Development

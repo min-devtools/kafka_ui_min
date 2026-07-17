@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import type { Connection } from "./types";
-import { fetchGroupOffsets, fetchGroups, fetchMetadata, fetchTopicOffsets, fetchTopicStats } from "./kafka";
+import { fetchGroupMembers, fetchGroupOffsets, fetchGroups, fetchMetadata, fetchTopicOffsets, fetchTopicStats } from "./kafka";
 import { activeConnection, useApp } from "../store";
 
 /** One cluster sync every 10s is plenty — applies to all background polling. */
@@ -50,6 +50,17 @@ export function useGroupOffsets(group: string | null) {
   return useQuery({
     queryKey: ["group-offsets", conn?.id, group],
     queryFn: () => fetchGroupOffsets(conn!, group!),
+    enabled: !!conn && !!group,
+    refetchInterval: SYNC_INTERVAL,
+    staleTime: SYNC_INTERVAL,
+  });
+}
+
+export function useGroupMembers(group: string | null) {
+  const conn = useActiveConnection();
+  return useQuery({
+    queryKey: ["group-members", conn?.id, group],
+    queryFn: () => fetchGroupMembers(conn!, group!),
     enabled: !!conn && !!group,
     refetchInterval: SYNC_INTERVAL,
     staleTime: SYNC_INTERVAL,

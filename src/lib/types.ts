@@ -62,6 +62,18 @@ export interface GroupOffset {
   lag: number;
 }
 
+export interface GroupAssignment {
+  topic: string;
+  partitions: number[];
+}
+
+export interface GroupMember {
+  memberId: string;
+  clientId: string;
+  clientHost: string;
+  assignments: GroupAssignment[];
+}
+
 export interface MessageRec {
   topic: string;
   partition: number;
