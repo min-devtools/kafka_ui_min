@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useIsFetching } from "@tanstack/react-query";
 import { LoadingBar } from "./ui/LoadingBar";
 import { Titlebar } from "./components/Titlebar";
@@ -42,7 +43,14 @@ export default function App() {
   const {
     tabs, activeTabId, theme, compact, leftCollapsed, rightCollapsed,
     toggleLeft, toggleRight, setCommandOpen, openMessagesTab,
-  } = useApp();
+  } = useApp(
+    useShallow((s) => ({
+      tabs: s.tabs, activeTabId: s.activeTabId, theme: s.theme, compact: s.compact,
+      leftCollapsed: s.leftCollapsed, rightCollapsed: s.rightCollapsed,
+      toggleLeft: s.toggleLeft, toggleRight: s.toggleRight,
+      setCommandOpen: s.setCommandOpen, openMessagesTab: s.openMessagesTab,
+    })),
+  );
 
   const inspectorOk = useApp((s) => inspectorAvailable(s));
   const fetching = useIsFetching() > 0;

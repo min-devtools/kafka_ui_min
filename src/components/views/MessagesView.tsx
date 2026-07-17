@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Badge } from "../../ui/Badge";
 import { ToolButton } from "../../ui/ToolButton";
 import { Combobox } from "../../ui/Combobox";
@@ -7,12 +8,14 @@ import { DateTimeModal } from "../../ui/DateTimeModal";
 import { SortTh } from "../../ui/SortTh";
 import { Icon } from "../../ui/Icon";
 import { LoadingBar } from "../../ui/LoadingBar";
+import { Pagination } from "../../ui/Pagination";
 import { useSortedRows } from "../../lib/useSort";
 import { useApp } from "../../store";
 import { useActiveConnection, useClusterMeta } from "../../lib/queries";
 import { consumeMessages, type ConsumeFrom } from "../../lib/kafka";
 import { setMessageFields } from "../../lib/monaco";
-import { formatValue, getPath } from "../../lib/format";
+import { formatTs, formatValue, getPath } from "../../lib/format";
+import { isTypingTarget } from "../../lib/dom";
 import type { MessageRec } from "../../lib/types";
 import { FullTopicSearch } from "./FullTopicSearch";
 import { compileFilter, type FilterFn, type JsFilter } from "../../lib/messageFilter";
@@ -33,7 +36,7 @@ function collectPaths(v: unknown, prefix: string, out: Set<string>, depth: numbe
   }
 }
 
-type Row = MessageRec & { json: unknown };
+type Row = MessageRec & { json?: unknown };
 
 /** "value.user.id" → "user.id"; bare "user.id" also accepted */
 const stripValue = (path: string) => (path.startsWith("value.") ? path.slice(6) : path);
@@ -46,11 +49,28 @@ function tryParse(payload: string): unknown {
   }
 }
 
+/** JS filters are saved per topic so they survive tab close / app restart. */
+function loadJsFilters(topic: string): JsFilter[] {
+  if (!topic) return [];
+  try {
+    const raw = localStorage.getItem(`kafkamin:jsfilters:${topic}`);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr)
+      ? arr.filter((f): f is JsFilter => typeof f?.id === "string" && typeof f?.code === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 export function MessagesView({ tabId, active }: { tabId: string; active: boolean }) {
   const conn = useActiveConnection();
   const meta = useClusterMeta();
-  const { msgTabs, selectedMsg, selectMsg, showToast, renameTab } = useApp();
-  const tabTopic = msgTabs[tabId]?.topic ?? "";
+  const tabTopic = useApp((s) => s.msgTabs[tabId]?.topic ?? "");
+  const selectedMsg = useApp((s) => s.selectedMsg);
+  const selectMsg = useApp((s) => s.selectMsg);
+  const showToast = useApp((s) => s.showToast);
+  const renameTab = useApp((s) => s.renameTab);
 
   const [topic, setTopic] = useState(tabTopic);
   const [partition, setPartition] = useState<number | null>(null);
@@ -64,13 +84,23 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
   const [colsInput, setColsInput] = useState("");
   const [messages, setMessages] = useState<MessageRec[] | null>(null);
   const [loading, setLoading] = useState(false);
-  const [jsFilters, setJsFilters] = useState<JsFilter[]>([]);
+  const [jsFilters, setJsFilters] = useState<JsFilter[]>(() => loadJsFilters(tabTopic));
   const [mode, setMode] = useState<"browse" | "search">("browse");
   const [jsDraft, setJsDraft] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(100);
   const vimStatusRef = useRef<HTMLSpanElement>(null);
 
   const [jsModalOpen, setJsModalOpen] = useState(false);
   const [editingFilterId, setEditingFilterId] = useState<string | null>(null);
+
+  // write-through: state + per-topic localStorage stay in sync
+  const updateJsFilters = (fn: (fs: JsFilter[]) => JsFilter[]) =>
+    setJsFilters((fs) => {
+      const next = fn(fs);
+      if (topic) localStorage.setItem(`kafkamin:jsfilters:${topic}`, JSON.stringify(next));
+      return next;
+    });
 
   const openNewFilter = () => {
     setEditingFilterId(null);
@@ -93,9 +123,9 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
       return;
     }
     if (editingFilterId) {
-      setJsFilters((fs) => fs.map((x) => (x.id === editingFilterId ? { ...x, code } : x)));
+      updateJsFilters((fs) => fs.map((x) => (x.id === editingFilterId ? { ...x, code } : x)));
     } else {
-      setJsFilters((fs) => [...fs, { id: crypto.randomUUID(), code, enabled: true }]);
+      updateJsFilters((fs) => [...fs, { id: crypto.randomUUID(), code, enabled: true }]);
     }
     setJsDraft("");
     setEditingFilterId(null);
@@ -105,6 +135,14 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
   useEffect(() => {
     if (tabTopic) setTopic(tabTopic);
   }, [tabTopic]);
+
+  // filters follow the topic
+  const filtersTopicRef = useRef(tabTopic);
+  useEffect(() => {
+    if (filtersTopicRef.current === topic) return;
+    filtersTopicRef.current = topic;
+    setJsFilters(loadJsFilters(topic));
+  }, [topic]);
 
   const partitions = meta.data?.topics.find((t) => t.name === topic)?.partitions ?? 0;
   const topicOptions = (meta.data?.topics ?? [])
@@ -126,14 +164,18 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
     }
     setLoading(true);
     try {
-      const msgs = await consumeMessages(conn, topic, {
+      const res = await consumeMessages(conn, topic, {
         limit,
         partition,
         from,
         offset: from === "offset" ? Number(fromOffset) : null,
         timestampMs: from === "timestamp" ? new Date(fromTime).getTime() : null,
       });
-      setMessages(msgs);
+      setMessages(res.messages);
+      setPage(1);
+      if (res.partial) {
+        showToast("Partial result", `Broker was slow — ${res.messages.length} messages fetched before the 10s timeout.`, "warn");
+      }
       renameTab(tabId, topic);
     } catch (err) {
       showToast("Consume failed", String(err), "err");
@@ -190,7 +232,9 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
     return fns;
   }, [jsFilters]);
 
-  const q = filter.trim().toLowerCase();
+  // deferred: typing in the filter box stays responsive while the 10k-row list re-filters
+  const deferredFilter = useDeferredValue(filter);
+  const q = deferredFilter.trim().toLowerCase();
   const needJson = paths.length > 0 || activeFns.length > 0;
   const rows: Row[] = useMemo(
     () =>
@@ -201,8 +245,8 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
             m.payload.toLowerCase().includes(q) ||
             (m.key ?? "").toLowerCase().includes(q),
         )
-        .map((m) => ({ ...m, json: needJson ? tryParse(m.payload) : undefined }))
-        .filter((r) =>
+        .map((m) => (needJson ? { ...m, json: tryParse(m.payload) } : m))
+        .filter((r: Row) =>
           activeFns.every((fn) => {
             try {
               return !!fn(r.json, r.key, r.partition, r.offset, r.timestamp, Object.fromEntries(r.headers));
@@ -224,6 +268,57 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
     }
   });
 
+  const totalPages = Math.max(1, Math.ceil((sorted?.length ?? 0) / pageSize));
+  useEffect(() => setPage((v) => Math.min(v, totalPages)), [totalPages]);
+  const paged = useMemo(
+    () => (sorted ?? []).slice((page - 1) * pageSize, page * pageSize),
+    [sorted, page, pageSize],
+  );
+
+  // ↑/↓ walk the selection through the (sorted, filtered) rows; page follows
+  useEffect(() => {
+    if (!active || mode !== "browse") return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+      if (isTypingTarget(e.target) || !sorted?.length) return;
+      e.preventDefault();
+      const sel = useApp.getState().selectedMsg;
+      const idx = sel
+        ? sorted.findIndex((r) => r.partition === sel.partition && r.offset === sel.offset && r.topic === sel.topic)
+        : -1;
+      const next = e.key === "ArrowDown" ? Math.min(sorted.length - 1, idx + 1) : Math.max(0, idx - 1);
+      selectMsg(sorted[next]);
+      setPage(Math.floor(next / pageSize) + 1);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [active, mode, sorted, pageSize, selectMsg]);
+
+  const copyNdjson = async () => {
+    const lines = (sorted ?? []).map(({ json: _json, ...m }) => JSON.stringify(m)).join("\n");
+    await writeText(lines);
+    showToast("Copied", `${sorted?.length ?? 0} filtered messages as NDJSON.`);
+  };
+
+  const jsModal = jsModalOpen && (
+    <div className="modal" onMouseDown={(e) => { if (e.target === e.currentTarget) setJsModalOpen(false); }}>
+      <div className="prompt-dialog" style={{ width: 620, maxWidth: "90vw" }}>
+        <strong>{editingFilterId ? "Edit JS filter" : "JS message filter"}</strong>
+        <p className="prompt-dialog-msg">
+          Expression or body with <code>return</code> over (value, key, partition, offset, timestamp, headers) — message passes when truthy. Example: <code>value.status === "paid"</code>
+        </p>
+        <CodeInput value={jsDraft} onChange={setJsDraft} vimStatusRef={vimStatusRef} height={140} />
+        <div className="prompt-dialog-foot">
+          <span ref={vimStatusRef} className="vim-status" style={{ flex: 1, textAlign: "left" }} />
+          <ToolButton onClick={() => setJsModalOpen(false)}>Cancel</ToolButton>
+          <ToolButton variant="primary" disabled={!jsDraft.trim()} onClick={saveJsFilter}>
+            <Icon name={editingFilterId ? "save" : "plus"} /> {editingFilterId ? "Save" : "Add filter"}
+          </ToolButton>
+        </div>
+      </div>
+    </div>
+  );
+
   if (mode === "search") {
     return (
       <>
@@ -235,20 +330,7 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
           onEditFilters={openNewFilter}
           onBrowse={() => setMode("browse")}
         />
-        {jsModalOpen && (
-          <div className="modal" onMouseDown={(e) => { if (e.target === e.currentTarget) setJsModalOpen(false); }}>
-            <div className="prompt-dialog" style={{ width: 620, maxWidth: "90vw" }}>
-              <strong>{editingFilterId ? "Edit JS filter" : "JS message filter"}</strong>
-              <p className="prompt-dialog-msg">Expression or body with <code>return</code> over (value, key, partition, offset, timestamp, headers).</p>
-              <CodeInput value={jsDraft} onChange={setJsDraft} vimStatusRef={vimStatusRef} height={140} />
-              <div className="prompt-dialog-foot">
-                <span ref={vimStatusRef} className="vim-status" style={{ flex: 1, textAlign: "left" }} />
-                <ToolButton onClick={() => setJsModalOpen(false)}>Cancel</ToolButton>
-                <ToolButton variant="primary" disabled={!jsDraft.trim()} onClick={saveJsFilter}><Icon name="plus" /> Add filter</ToolButton>
-              </div>
-            </div>
-          </div>
-        )}
+        {jsModal}
       </>
     );
   }
@@ -256,7 +338,7 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
   return (
     <section
       className={`content indexes-view ${active ? "active" : ""}`}
-      style={{ gridTemplateRows: "46px 46px minmax(0, 1fr)" }}
+      style={{ gridTemplateRows: messages !== null ? "46px 46px minmax(0, 1fr) auto" : "46px 46px minmax(0, 1fr)" }}
     >
       <LoadingBar active={loading} />
       {/* row 1 — source: topic / partition / limit / order */}
@@ -325,7 +407,7 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
         <Badge>{messages ? `${rows.length}/${messages.length}` : "0"}</Badge>
       </div>
       {/* row 2 — search + column projection + JS filters */}
-      <div className="index-searchbar" style={{ gridTemplateColumns: "minmax(220px, 1fr) minmax(180px, 280px) auto minmax(0, 1fr)" }}>
+      <div className="index-searchbar" style={{ gridTemplateColumns: "minmax(220px, 1fr) minmax(180px, 280px) auto auto minmax(0, 1fr)" }}>
         <input
           className="index-search"
           placeholder={`Filter ${messages?.length ?? 0} loaded messages (key/payload)`}
@@ -343,6 +425,9 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
         <ToolButton title="Add a Redpanda-style JS filter" onClick={openNewFilter}>
           <Icon name="filter" /> JS filter
         </ToolButton>
+        <ToolButton title="Copy the filtered rows to the clipboard as NDJSON" disabled={!rows.length} onClick={() => void copyNdjson()}>
+          <Icon name="copy" /> NDJSON
+        </ToolButton>
         <div className="path-chip-row">
           {jsFilters.map((f) => (
             <span
@@ -351,7 +436,7 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
               style={f.enabled ? undefined : { opacity: 0.45, filter: "grayscale(1)" }}
               title={`${f.code} — click to ${f.enabled ? "disable" : "enable"}`}
               onClick={() =>
-                setJsFilters((fs) => fs.map((x) => (x.id === f.id ? { ...x, enabled: !x.enabled } : x)))
+                updateJsFilters((fs) => fs.map((x) => (x.id === f.id ? { ...x, enabled: !x.enabled } : x)))
               }
             >
               <span
@@ -370,7 +455,7 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
                 style={{ display: "inline-flex" }}
                 onClick={(e) => {
                   e.stopPropagation();
-                  setJsFilters((fs) => fs.filter((x) => x.id !== f.id));
+                  updateJsFilters((fs) => fs.filter((x) => x.id !== f.id));
                 }}
               >
                 <Icon name="x" size={12} />
@@ -389,24 +474,7 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
           }}
         />
       )}
-      {jsModalOpen && (
-        <div className="modal" onMouseDown={(e) => { if (e.target === e.currentTarget) setJsModalOpen(false); }}>
-          <div className="prompt-dialog" style={{ width: 620, maxWidth: "90vw" }}>
-            <strong>{editingFilterId ? "Edit JS filter" : "JS message filter"}</strong>
-            <p className="prompt-dialog-msg">
-              Expression or body with <code>return</code> over (value, key, partition, offset, timestamp, headers) — message passes when truthy. Example: <code>value.status === "paid"</code>
-            </p>
-            <CodeInput value={jsDraft} onChange={setJsDraft} vimStatusRef={vimStatusRef} height={140} />
-            <div className="prompt-dialog-foot">
-              <span ref={vimStatusRef} className="vim-status" style={{ flex: 1, textAlign: "left" }} />
-              <ToolButton onClick={() => setJsModalOpen(false)}>Cancel</ToolButton>
-              <ToolButton variant="primary" disabled={!jsDraft.trim()} onClick={saveJsFilter}>
-                <Icon name={editingFilterId ? "save" : "plus"} /> {editingFilterId ? "Save" : "Add filter"}
-              </ToolButton>
-            </div>
-          </div>
-        </div>
-      )}
+      {jsModal}
       <div className="index-table-wrap">
         {!conn && <div className="empty-note">Connect to a cluster first.</div>}
         {loading && <div className="empty-note">Loading messages…</div>}
@@ -428,7 +496,7 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
               </tr>
             </thead>
             <tbody>
-              {(sorted ?? []).map((m) => (
+              {paged.map((m) => (
                 <tr
                   key={`${m.partition}-${m.offset}`}
                   className={
@@ -440,7 +508,7 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
                 >
                   <td>{m.partition}</td>
                   <td>{m.offset}</td>
-                  <td>{m.timestamp ? new Date(m.timestamp).toISOString().replace("T", " ").slice(0, 19) : "—"}</td>
+                  <td>{formatTs(m.timestamp)}</td>
                   <td style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 140 }}>{m.key ?? "—"}</td>
                   {paths.map((p) => (
                     <td key={p} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 200 }}>
@@ -453,10 +521,10 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
               {rows.length === 0 && (
                 <tr>
                   <td colSpan={5 + paths.length}>
-                    No messages{q ? ` match "${filter.trim()}" in the ${messages?.length ?? 0} loaded here` : ""}.{" "}
+                    No messages{q ? ` match "${deferredFilter.trim()}" in the ${messages?.length ?? 0} loaded here` : ""}.{" "}
                     {q && (
                       <ToolButton onClick={() => setMode("search")}>
-                        <Icon name="search" /> Search entire topic for “{filter.trim()}”
+                        <Icon name="search" /> Search entire topic for “{deferredFilter.trim()}”
                       </ToolButton>
                     )}
                   </td>
@@ -466,6 +534,12 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
           </table>
         )}
       </div>
+      {messages !== null && (
+        <div className="full-search-foot">
+          <span>{rows.length} filtered · {messages.length} loaded · times shown in local timezone</span>
+          <Pagination page={page} totalPages={totalPages} pageSize={pageSize} onPage={setPage} onPageSize={setPageSize} />
+        </div>
+      )}
     </section>
   );
 }

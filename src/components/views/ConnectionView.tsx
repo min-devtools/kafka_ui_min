@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useQueryClient } from "@tanstack/react-query";
 import { ToolButton } from "../../ui/ToolButton";
 import { FormRow } from "../../ui/FormRow";
@@ -35,7 +36,13 @@ function draftFrom(conn: Connection | null): Connection {
 
 export function ConnectionView({ active }: { active: boolean }) {
   const queryClient = useQueryClient();
-  const { connections, editingConnId, saveConnection, setActiveConn, openTab, closeTab, setEditingConn, showToast } = useApp();
+  const { connections, editingConnId, saveConnection, setActiveConn, openTab, closeTab, setEditingConn, showToast } = useApp(
+    useShallow((s) => ({
+      connections: s.connections, editingConnId: s.editingConnId, saveConnection: s.saveConnection,
+      setActiveConn: s.setActiveConn, openTab: s.openTab, closeTab: s.closeTab,
+      setEditingConn: s.setEditingConn, showToast: s.showToast,
+    })),
+  );
   const editing = useMemo(
     () => connections.find((c) => c.id === editingConnId) ?? null,
     [connections, editingConnId],

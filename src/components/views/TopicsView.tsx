@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useQueryClient } from "@tanstack/react-query";
 import { Badge } from "../../ui/Badge";
 import { ToolButton } from "../../ui/ToolButton";
@@ -25,7 +26,12 @@ export function TopicsView({ active }: { active: boolean }) {
   const meta = useClusterMeta();
   const stats = useTopicStats();
   const queryClient = useQueryClient();
-  const { openMessagesTab, setActiveTopic, activeTopic, showToast, openDialog, openTab } = useApp();
+  const { openMessagesTab, setActiveTopic, activeTopic, showToast, openDialog, openTab } = useApp(
+    useShallow((s) => ({
+      openMessagesTab: s.openMessagesTab, setActiveTopic: s.setActiveTopic, activeTopic: s.activeTopic,
+      showToast: s.showToast, openDialog: s.openDialog, openTab: s.openTab,
+    })),
+  );
 
   const q = filter.trim().toLowerCase();
   const statsByName = new Map((stats.data ?? []).map((s) => [s.name, s]));

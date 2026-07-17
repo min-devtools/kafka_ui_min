@@ -1,19 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Badge } from "../../ui/Badge";
 import { Combobox } from "../../ui/Combobox";
 import { Icon } from "../../ui/Icon";
+import { SortTh } from "../../ui/SortTh";
 import { ToolButton } from "../../ui/ToolButton";
 import { LoadingBar } from "../../ui/LoadingBar";
+import { Pagination } from "../../ui/Pagination";
+import { useSortedRows } from "../../lib/useSort";
 import { cancelFullTopicSearch, setFullTopicSearchPaused, startFullTopicSearch } from "../../lib/kafka";
-import { formatDocCount } from "../../lib/format";
+import { formatDocCount, formatTs } from "../../lib/format";
+import { isTypingTarget } from "../../lib/dom";
 import type { MessageRec, SearchBatch, SearchCondition, SearchFinished, SearchOperator, SearchProgress } from "../../lib/types";
 import { useActiveConnection, useClusterMeta } from "../../lib/queries";
 import { useApp } from "../../store";
 import { compileFilter, type JsFilter } from "../../lib/messageFilter";
 
 const RESULT_CAP = 10_000;
-const PAGE_SIZES = [25, 50, 100, 250];
 /** pages of matches kept buffered ahead of the viewed page before the scan idles */
 const PREFETCH_PAGES = 2;
 const OPERATORS: { value: SearchOperator; label: string }[] = [
@@ -46,7 +50,9 @@ export function FullTopicSearch({
 }) {
   const conn = useActiveConnection();
   const meta = useClusterMeta();
-  const { selectMsg, selectedMsg, showToast } = useApp();
+  const selectMsg = useApp((s) => s.selectMsg);
+  const selectedMsg = useApp((s) => s.selectedMsg);
+  const showToast = useApp((s) => s.showToast);
   const [topic, setTopic] = useState(initialTopic);
   const [text, setText] = useState(initialText);
   const [conditions, setConditions] = useState<SearchCondition[]>([]);
@@ -164,9 +170,43 @@ export function FullTopicSearch({
     }
   };
 
+  const { sorted, sort, cycleSort } = useSortedRows<MessageRec>(results, (r, col) => {
+    switch (col) {
+      case "partition": return r.partition;
+      case "offset": return r.offset;
+      case "timestamp": return r.timestamp;
+      case "key": return r.key;
+      default: return null;
+    }
+  });
   const totalPages = Math.max(1, Math.ceil(results.length / pageSize));
   useEffect(() => setPage((value) => Math.min(value, totalPages)), [totalPages]);
-  const visible = useMemo(() => results.slice((page - 1) * pageSize, page * pageSize), [results, page, pageSize]);
+  const visible = useMemo(() => (sorted ?? []).slice((page - 1) * pageSize, page * pageSize), [sorted, page, pageSize]);
+
+  // ↑/↓ walk the selection through the sorted results; page follows
+  useEffect(() => {
+    if (!active) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+      if (isTypingTarget(e.target) || !sorted?.length) return;
+      e.preventDefault();
+      const sel = useApp.getState().selectedMsg;
+      const idx = sel
+        ? sorted.findIndex((r) => r.partition === sel.partition && r.offset === sel.offset && r.topic === sel.topic)
+        : -1;
+      const next = e.key === "ArrowDown" ? Math.min(sorted.length - 1, idx + 1) : Math.max(0, idx - 1);
+      selectMsg(sorted[next]);
+      setPage(Math.floor(next / pageSize) + 1);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [active, sorted, pageSize, selectMsg]);
+
+  const copyNdjson = async () => {
+    const lines = (sorted ?? []).map((m) => JSON.stringify(m)).join("\n");
+    await writeText(lines);
+    showToast("Copied", `${sorted?.length ?? 0} search results as NDJSON.`);
+  };
 
   // Lazy scan: keep the backend scanning only until it has buffered enough matches
   // for the viewed page plus a lookahead, then idle it. Paging forward resumes —
@@ -253,11 +293,17 @@ export function FullTopicSearch({
         {state !== "idle" && results.length === 0 && <div className="empty-note">{state === "running" ? "Scanning for matches…" : "No matching messages."}</div>}
         {results.length > 0 && (
           <table>
-            <thead><tr><th style={{ width: 60 }}>Part</th><th style={{ width: 100 }}>Offset</th><th style={{ width: 180 }}>Timestamp</th><th style={{ width: 160 }}>Key</th><th>Payload</th></tr></thead>
+            <thead><tr>
+              <SortTh col="partition" sort={sort} onSort={cycleSort} style={{ width: 60 }}>Part</SortTh>
+              <SortTh col="offset" sort={sort} onSort={cycleSort} style={{ width: 100 }}>Offset</SortTh>
+              <SortTh col="timestamp" sort={sort} onSort={cycleSort} style={{ width: 180 }}>Timestamp</SortTh>
+              <SortTh col="key" sort={sort} onSort={cycleSort} style={{ width: 160 }}>Key</SortTh>
+              <th>Payload</th>
+            </tr></thead>
             <tbody>{visible.map((message) => (
               <tr key={`${message.partition}-${message.offset}`} className={selectedMsg?.partition === message.partition && selectedMsg.offset === message.offset ? "selected" : ""} onClick={() => selectMsg(message)}>
                 <td>{message.partition}</td><td>{message.offset}</td>
-                <td>{message.timestamp ? new Date(message.timestamp).toISOString().replace("T", " ").slice(0, 19) : "—"}</td>
+                <td>{formatTs(message.timestamp)}</td>
                 <td className="truncate-cell">{message.key ?? "—"}</td><td className="truncate-cell">{message.payload.slice(0, 500)}</td>
               </tr>
             ))}</tbody>
@@ -269,12 +315,12 @@ export function FullTopicSearch({
           ? `Showing ${formatDocCount(results.length)} matches from the first ${formatDocCount(RESULT_CAP)} backend candidates · truncated`
           : matchCount > RESULT_CAP
             ? `Showing first ${formatDocCount(RESULT_CAP)} of ${formatDocCount(matchCount)} matches`
-            : `${formatDocCount(results.length)} results`}</span>
+            : `${formatDocCount(results.length)} results`} · times shown in local timezone</span>
         <div className="seg">
-          <label>Rows <select className="index-search" value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1); }}>{PAGE_SIZES.map((size) => <option key={size}>{size}</option>)}</select></label>
-          <ToolButton iconOnly title="Previous page" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}><Icon name="arrow-left" /></ToolButton>
-          <span>Page {page} / {totalPages}</span>
-          <ToolButton iconOnly title="Next page" disabled={page >= totalPages} onClick={() => setPage((value) => value + 1)}><Icon name="arrow-right" /></ToolButton>
+          <ToolButton title="Copy all results to the clipboard as NDJSON" disabled={!results.length} onClick={() => void copyNdjson()}>
+            <Icon name="copy" /> NDJSON
+          </ToolButton>
+          <Pagination page={page} totalPages={totalPages} pageSize={pageSize} onPage={setPage} onPageSize={setPageSize} />
         </div>
       </div>
     </section>

@@ -35,12 +35,18 @@ export const fetchGroupOffsets = (conn: Connection, group: string) =>
 
 export type ConsumeFrom = "end" | "start" | "offset" | "timestamp";
 
+export interface ConsumeResult {
+  messages: MessageRec[];
+  /** true when the backend deadline hit before every partition was drained */
+  partial: boolean;
+}
+
 export const consumeMessages = (
   conn: Connection,
   topic: string,
   opts: { limit: number; partition: number | null; from: ConsumeFrom; offset?: number | null; timestampMs?: number | null },
 ) =>
-  invoke<MessageRec[]>("kafka_consume", {
+  invoke<ConsumeResult>("kafka_consume", {
     conn: wire(conn),
     topic,
     limit: opts.limit,
@@ -87,6 +93,11 @@ export const deleteTopic = (conn: Connection, topic: string) =>
 
 export const deleteGroup = (conn: Connection, group: string) =>
   invoke<void>("kafka_delete_group", { conn: wire(conn), group });
+
+/** Connection passwords live in the OS keychain, keyed by connection id. */
+export const secretSet = (id: string, secret: string) => invoke<void>("secret_set", { id, secret });
+export const secretGet = (id: string) => invoke<string | null>("secret_get", { id });
+export const secretDelete = (id: string) => invoke<void>("secret_delete", { id });
 
 export const resetOffsets = (
   conn: Connection,

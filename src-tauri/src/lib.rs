@@ -28,6 +28,76 @@ struct SearchHandle {
 #[derive(Default)]
 struct SearchRegistry(Mutex<HashMap<String, SearchHandle>>);
 
+/// One long-lived inspect consumer per connection config — avoids a fresh TCP +
+/// metadata handshake on every poll cycle. librdkafka reconnects on its own, so
+/// entries stay valid across broker restarts. Only used for read-only metadata
+/// queries; consume/search still create their own consumers (they call assign()).
+#[derive(Default)]
+struct ConsumerCache(Mutex<HashMap<String, Arc<BaseConsumer>>>);
+
+fn conn_key(conn: &KafkaConnection) -> String {
+    format!(
+        "{}|{}|{}|{}|{}",
+        conn.brokers,
+        conn.security_protocol,
+        conn.sasl_mechanism.as_deref().unwrap_or(""),
+        conn.username.as_deref().unwrap_or(""),
+        conn.password.as_deref().unwrap_or("")
+    )
+}
+
+fn inspect_consumer(
+    cache: &ConsumerCache,
+    conn: &KafkaConnection,
+) -> Result<Arc<BaseConsumer>, String> {
+    let mut map = cache.0.lock().map_err(|e| e.to_string())?;
+    if let Some(c) = map.get(&conn_key(conn)) {
+        return Ok(c.clone());
+    }
+    let c = Arc::new(make_consumer(conn, INSPECT_GROUP)?);
+    map.insert(conn_key(conn), c.clone());
+    Ok(c)
+}
+
+/// Fan watermark lookups out over a few threads — librdkafka's handle is
+/// thread-safe and each fetch is one blocking RTT, so serial probing scales
+/// with partition count while parallel probing scales with broker latency.
+fn fetch_watermarks_parallel(
+    consumer: &BaseConsumer,
+    pairs: &[(String, i32)],
+) -> Result<HashMap<(String, i32), (i64, i64)>, String> {
+    const THREADS: usize = 8;
+    if pairs.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let chunk = pairs.len().div_ceil(THREADS);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = pairs
+            .chunks(chunk)
+            .map(|slice| {
+                scope.spawn(move || {
+                    let mut out = Vec::with_capacity(slice.len());
+                    for (topic, partition) in slice {
+                        let wm = consumer
+                            .fetch_watermarks(topic, *partition, TIMEOUT)
+                            .map_err(|e| e.to_string())?;
+                        out.push(((topic.clone(), *partition), wm));
+                    }
+                    Ok::<_, String>(out)
+                })
+            })
+            .collect();
+        let mut map = HashMap::new();
+        for handle in handles {
+            let entries = handle
+                .join()
+                .map_err(|_| "watermark thread panicked".to_string())??;
+            map.extend(entries);
+        }
+        Ok(map)
+    })
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KafkaConnection {
@@ -99,8 +169,7 @@ pub struct ClusterMeta {
     pub topics: Vec<TopicInfo>,
 }
 
-fn metadata_impl(conn: &KafkaConnection) -> Result<ClusterMeta, String> {
-    let consumer = make_consumer(conn, INSPECT_GROUP)?;
+fn metadata_impl(consumer: &BaseConsumer) -> Result<ClusterMeta, String> {
     let md = consumer
         .fetch_metadata(None, TIMEOUT)
         .map_err(|e| e.to_string())?;
@@ -132,8 +201,12 @@ fn metadata_impl(conn: &KafkaConnection) -> Result<ClusterMeta, String> {
 }
 
 #[tauri::command]
-async fn kafka_metadata(conn: KafkaConnection) -> Result<ClusterMeta, String> {
-    tauri::async_runtime::spawn_blocking(move || metadata_impl(&conn))
+async fn kafka_metadata(
+    cache: State<'_, ConsumerCache>,
+    conn: KafkaConnection,
+) -> Result<ClusterMeta, String> {
+    let consumer = inspect_consumer(&cache, &conn)?;
+    tauri::async_runtime::spawn_blocking(move || metadata_impl(&consumer))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -146,11 +219,7 @@ pub struct PartitionOffsets {
     pub high: i64,
 }
 
-fn topic_offsets_impl(
-    conn: &KafkaConnection,
-    topic: &str,
-) -> Result<Vec<PartitionOffsets>, String> {
-    let consumer = make_consumer(conn, INSPECT_GROUP)?;
+fn topic_offsets_impl(consumer: &BaseConsumer, topic: &str) -> Result<Vec<PartitionOffsets>, String> {
     let md = consumer
         .fetch_metadata(Some(topic), TIMEOUT)
         .map_err(|e| e.to_string())?;
@@ -158,26 +227,32 @@ fn topic_offsets_impl(
         .topics()
         .first()
         .ok_or_else(|| format!("topic not found: {topic}"))?;
-    let mut out = Vec::new();
-    for p in t.partitions() {
-        let (low, high) = consumer
-            .fetch_watermarks(topic, p.id(), TIMEOUT)
-            .map_err(|e| e.to_string())?;
-        out.push(PartitionOffsets {
-            partition: p.id(),
+    let pairs: Vec<(String, i32)> = t
+        .partitions()
+        .iter()
+        .map(|p| (topic.to_string(), p.id()))
+        .collect();
+    let watermarks = fetch_watermarks_parallel(consumer, &pairs)?;
+    let mut out: Vec<PartitionOffsets> = watermarks
+        .into_iter()
+        .map(|((_, partition), (low, high))| PartitionOffsets {
+            partition,
             low,
             high,
-        });
-    }
+        })
+        .collect();
+    out.sort_by_key(|p| p.partition);
     Ok(out)
 }
 
 #[tauri::command]
 async fn kafka_topic_offsets(
+    cache: State<'_, ConsumerCache>,
     conn: KafkaConnection,
     topic: String,
 ) -> Result<Vec<PartitionOffsets>, String> {
-    tauri::async_runtime::spawn_blocking(move || topic_offsets_impl(&conn, &topic))
+    let consumer = inspect_consumer(&cache, &conn)?;
+    tauri::async_runtime::spawn_blocking(move || topic_offsets_impl(&consumer, &topic))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -192,13 +267,20 @@ pub struct TopicStats {
     pub high_total: i64,
 }
 
-fn topic_stats_impl(conn: &KafkaConnection) -> Result<Vec<TopicStats>, String> {
-    let consumer = make_consumer(conn, INSPECT_GROUP)?;
+fn topic_stats_impl(consumer: &BaseConsumer) -> Result<Vec<TopicStats>, String> {
     let md = consumer
         .fetch_metadata(None, TIMEOUT)
         .map_err(|e| e.to_string())?;
-    // ponytail: one watermark RTT per partition, serial — fine for dev clusters,
-    // batch/parallelize if a cluster with thousands of partitions shows up
+    let mut pairs = Vec::new();
+    for t in md.topics() {
+        if t.name().starts_with("__") {
+            continue;
+        }
+        for p in t.partitions() {
+            pairs.push((t.name().to_string(), p.id()));
+        }
+    }
+    let watermarks = fetch_watermarks_parallel(consumer, &pairs)?;
     let mut out = Vec::new();
     for t in md.topics() {
         if t.name().starts_with("__") {
@@ -207,11 +289,10 @@ fn topic_stats_impl(conn: &KafkaConnection) -> Result<Vec<TopicStats>, String> {
         let mut messages = 0i64;
         let mut high_total = 0i64;
         for p in t.partitions() {
-            let (low, high) = consumer
-                .fetch_watermarks(t.name(), p.id(), TIMEOUT)
-                .map_err(|e| e.to_string())?;
-            messages += (high - low).max(0);
-            high_total += high;
+            if let Some(&(low, high)) = watermarks.get(&(t.name().to_string(), p.id())) {
+                messages += (high - low).max(0);
+                high_total += high;
+            }
         }
         out.push(TopicStats {
             name: t.name().to_string(),
@@ -223,8 +304,12 @@ fn topic_stats_impl(conn: &KafkaConnection) -> Result<Vec<TopicStats>, String> {
 }
 
 #[tauri::command]
-async fn kafka_topic_stats(conn: KafkaConnection) -> Result<Vec<TopicStats>, String> {
-    tauri::async_runtime::spawn_blocking(move || topic_stats_impl(&conn))
+async fn kafka_topic_stats(
+    cache: State<'_, ConsumerCache>,
+    conn: KafkaConnection,
+) -> Result<Vec<TopicStats>, String> {
+    let consumer = inspect_consumer(&cache, &conn)?;
+    tauri::async_runtime::spawn_blocking(move || topic_stats_impl(&consumer))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -238,8 +323,7 @@ pub struct GroupInfo {
     pub members: i32,
 }
 
-fn groups_impl(conn: &KafkaConnection) -> Result<Vec<GroupInfo>, String> {
-    let consumer = make_consumer(conn, INSPECT_GROUP)?;
+fn groups_impl(consumer: &BaseConsumer) -> Result<Vec<GroupInfo>, String> {
     let list = consumer
         .fetch_group_list(None, TIMEOUT)
         .map_err(|e| e.to_string())?;
@@ -259,8 +343,12 @@ fn groups_impl(conn: &KafkaConnection) -> Result<Vec<GroupInfo>, String> {
 }
 
 #[tauri::command]
-async fn kafka_groups(conn: KafkaConnection) -> Result<Vec<GroupInfo>, String> {
-    tauri::async_runtime::spawn_blocking(move || groups_impl(&conn))
+async fn kafka_groups(
+    cache: State<'_, ConsumerCache>,
+    conn: KafkaConnection,
+) -> Result<Vec<GroupInfo>, String> {
+    let consumer = inspect_consumer(&cache, &conn)?;
+    tauri::async_runtime::spawn_blocking(move || groups_impl(&consumer))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -295,12 +383,20 @@ fn group_offsets_impl(conn: &KafkaConnection, group: &str) -> Result<Vec<GroupOf
     let committed = consumer
         .committed_offsets(tpl, TIMEOUT)
         .map_err(|e| e.to_string())?;
+    let pairs: Vec<(String, i32)> = committed
+        .elements()
+        .iter()
+        .filter(|el| matches!(el.offset(), Offset::Offset(_)))
+        .map(|el| (el.topic().to_string(), el.partition()))
+        .collect();
+    let watermarks = fetch_watermarks_parallel(&consumer, &pairs)?;
     let mut out = Vec::new();
     for el in committed.elements() {
         if let Offset::Offset(c) = el.offset() {
-            let (low, high) = consumer
-                .fetch_watermarks(el.topic(), el.partition(), TIMEOUT)
-                .map_err(|e| e.to_string())?;
+            let Some(&(low, high)) = watermarks.get(&(el.topic().to_string(), el.partition()))
+            else {
+                continue;
+            };
             out.push(GroupOffset {
                 topic: el.topic().to_string(),
                 partition: el.partition(),
@@ -639,50 +735,43 @@ fn search_impl(
                 if let Some(cursor) = cursors.get_mut(&partition) {
                     scanned += advance_offset_progress(cursor, offset);
                 }
-                let raw_payload = raw.payload().unwrap_or_default();
-                let full_payload = String::from_utf8_lossy(raw_payload).into_owned();
-                let (display_payload, truncated) = lossy_capped(raw_payload);
-                let key = raw.key().map(|v| String::from_utf8_lossy(v).into_owned());
-                let headers = raw
-                    .headers()
-                    .map(|values| {
-                        values
-                            .iter()
-                            .map(|header| {
-                                (
-                                    header.key.to_string(),
-                                    String::from_utf8_lossy(header.value.unwrap_or_default())
-                                        .into_owned(),
-                                )
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let msg = MessageRec {
-                    topic: topic.clone(),
-                    partition,
-                    offset,
-                    timestamp: raw.timestamp().to_millis(),
-                    key,
-                    payload: full_payload,
-                    truncated,
-                    headers,
-                };
+                // borrow-only text match first — non-matching messages allocate nothing
+                let payload = String::from_utf8_lossy(raw.payload().unwrap_or_default());
+                let key = raw.key().map(String::from_utf8_lossy);
                 let text_match = query.is_empty()
-                    || msg.payload.to_lowercase().contains(&query)
-                    || msg
-                        .key
-                        .as_deref()
-                        .unwrap_or("")
-                        .to_lowercase()
-                        .contains(&query);
-                if text_match && matches_conditions(&msg, &conditions) {
-                    candidate_matches += 1;
-                    let display = MessageRec {
-                        payload: display_payload,
-                        ..msg
+                    || contains_ci(&payload, &query)
+                    || key.as_deref().is_some_and(|k| contains_ci(k, &query));
+                if text_match {
+                    let headers = raw
+                        .headers()
+                        .map(|values| {
+                            values
+                                .iter()
+                                .map(|header| {
+                                    (
+                                        header.key.to_string(),
+                                        String::from_utf8_lossy(header.value.unwrap_or_default())
+                                            .into_owned(),
+                                    )
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let mut msg = MessageRec {
+                        topic: topic.clone(),
+                        partition,
+                        offset,
+                        timestamp: raw.timestamp().to_millis(),
+                        key: key.map(|k| k.into_owned()),
+                        payload: payload.into_owned(),
+                        truncated: false,
+                        headers,
                     };
-                    push_candidate(&mut batch, &mut emitted, display);
+                    if matches_conditions(&msg, &conditions) {
+                        candidate_matches += 1;
+                        msg.truncated = truncate_in_place(&mut msg.payload, PAYLOAD_CAP);
+                        push_candidate(&mut batch, &mut emitted, msg);
+                    }
                 }
                 if targets
                     .get(&partition)
@@ -861,6 +950,35 @@ fn kafka_search_set_paused(
     Ok(())
 }
 
+/// Case-insensitive substring match without allocating. `needle_lower` must
+/// already be lowercase. ASCII fast path; non-ASCII needles fall back to a
+/// lowercased copy of the haystack.
+fn contains_ci(haystack: &str, needle_lower: &str) -> bool {
+    if needle_lower.is_empty() {
+        return true;
+    }
+    if needle_lower.is_ascii() {
+        let h = haystack.as_bytes();
+        let n = needle_lower.as_bytes();
+        h.len() >= n.len() && h.windows(n.len()).any(|w| w.eq_ignore_ascii_case(n))
+    } else {
+        haystack.to_lowercase().contains(needle_lower)
+    }
+}
+
+/// Truncate to at most `cap` bytes on a char boundary. Returns true if cut.
+fn truncate_in_place(s: &mut String, cap: usize) -> bool {
+    if s.len() <= cap {
+        return false;
+    }
+    let mut end = cap;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s.truncate(end);
+    true
+}
+
 fn lossy_capped(bytes: &[u8]) -> (String, bool) {
     let truncated = bytes.len() > PAYLOAD_CAP;
     let slice = if truncated {
@@ -871,6 +989,14 @@ fn lossy_capped(bytes: &[u8]) -> (String, bool) {
     (String::from_utf8_lossy(slice).into_owned(), truncated)
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsumeResult {
+    pub messages: Vec<MessageRec>,
+    /// true when the 10s deadline hit before every assigned partition was drained
+    pub partial: bool,
+}
+
 fn consume_impl(
     conn: &KafkaConnection,
     topic: &str,
@@ -879,7 +1005,7 @@ fn consume_impl(
     from: &str,
     from_offset: Option<i64>,
     from_ts: Option<i64>,
-) -> Result<Vec<MessageRec>, String> {
+) -> Result<ConsumeResult, String> {
     let limit = limit.clamp(1, 10_000);
     let consumer = make_consumer(conn, INSPECT_GROUP)?;
     let md = consumer
@@ -897,7 +1023,7 @@ fn consume_impl(
         partitions = vec![p];
     }
     if partitions.is_empty() {
-        return Ok(Vec::new());
+        return Ok(ConsumeResult { messages: Vec::new(), partial: false });
     }
 
     // "timestamp" resolves each partition's start via OffsetsForTimes in one call
@@ -947,14 +1073,13 @@ fn consume_impl(
             .map_err(|e| e.to_string())?;
     }
     if target.is_empty() {
-        return Ok(Vec::new());
+        return Ok(ConsumeResult { messages: Vec::new(), partial: false });
     }
     consumer.assign(&tpl).map_err(|e| e.to_string())?;
 
     let mut out = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(10);
-    let mut done: usize = 0;
-    while out.len() < limit && done < target.len() && Instant::now() < deadline {
+    while out.len() < limit && !target.is_empty() && Instant::now() < deadline {
         match consumer.poll(Duration::from_millis(400)) {
             Some(Ok(msg)) => {
                 let (payload, truncated) = lossy_capped(msg.payload().unwrap_or_default());
@@ -986,7 +1111,6 @@ fn consume_impl(
                 });
                 if let Some(&high) = target.get(&p) {
                     if offset + 1 >= high {
-                        done += 1;
                         target.remove(&p);
                     }
                 }
@@ -996,6 +1120,7 @@ fn consume_impl(
         }
     }
     consumer.unassign().ok();
+    let partial = out.len() < limit && !target.is_empty();
     if from == "end" {
         // newest first
         out.sort_by(|a, b| b.timestamp.cmp(&a.timestamp).then(b.offset.cmp(&a.offset)));
@@ -1004,7 +1129,7 @@ fn consume_impl(
         out.sort_by(|a, b| a.timestamp.cmp(&b.timestamp).then(a.offset.cmp(&b.offset)));
     }
     out.truncate(limit);
-    Ok(out)
+    Ok(ConsumeResult { messages: out, partial })
 }
 
 #[tauri::command]
@@ -1016,7 +1141,7 @@ async fn kafka_consume(
     from: String,
     offset: Option<i64>,
     timestamp_ms: Option<i64>,
-) -> Result<Vec<MessageRec>, String> {
+) -> Result<ConsumeResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         consume_impl(&conn, &topic, limit, partition, &from, offset, timestamp_ms)
     })
@@ -1194,6 +1319,40 @@ async fn kafka_delete_group(conn: KafkaConnection, group: String) -> Result<(), 
     Ok(())
 }
 
+/// Connection passwords live in the OS keychain, not in kafkamin.json.
+const KEYCHAIN_SERVICE: &str = "kafkamin";
+
+#[tauri::command]
+fn secret_set(id: String, secret: String) -> Result<(), String> {
+    keyring::Entry::new(KEYCHAIN_SERVICE, &id)
+        .map_err(|e| e.to_string())?
+        .set_password(&secret)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn secret_get(id: String) -> Result<Option<String>, String> {
+    match keyring::Entry::new(KEYCHAIN_SERVICE, &id)
+        .map_err(|e| e.to_string())?
+        .get_password()
+    {
+        Ok(secret) => Ok(Some(secret)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+fn secret_delete(id: String) -> Result<(), String> {
+    match keyring::Entry::new(KEYCHAIN_SERVICE, &id)
+        .map_err(|e| e.to_string())?
+        .delete_credential()
+    {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// List installed font family names (macOS: NSFontManager via JXA — no extra crates).
 #[tauri::command]
 async fn list_fonts() -> Result<Vec<String>, String> {
@@ -1220,6 +1379,7 @@ async fn list_fonts() -> Result<Vec<String>, String> {
 pub fn run() {
     tauri::Builder::default()
         .manage(SearchRegistry::default())
+        .manage(ConsumerCache::default())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
@@ -1238,6 +1398,9 @@ pub fn run() {
             kafka_create_topic,
             kafka_delete_topic,
             kafka_delete_group,
+            secret_set,
+            secret_get,
+            secret_delete,
             list_fonts
         ])
         .setup(|app| {
@@ -1402,6 +1565,25 @@ mod tests {
         push_candidate(&mut batch, &mut emitted, message("two"));
         assert_eq!(emitted, 10_000);
         assert_eq!(batch.len(), 1);
+    }
+
+    #[test]
+    fn contains_ci_matches_without_alloc_paths() {
+        assert!(contains_ci("Hello PAID World", "paid"));
+        assert!(contains_ci("hello", ""));
+        assert!(!contains_ci("hi", "paid"));
+        // non-ascii needle falls back to unicode lowercase
+        assert!(contains_ci("XIN CHÀO", "chào"));
+    }
+
+    #[test]
+    fn truncate_in_place_respects_char_boundaries() {
+        let mut s = "aé".repeat(10); // 'é' is 2 bytes — byte 4 splits a char
+        assert!(truncate_in_place(&mut s, 4));
+        assert_eq!(s, "aéa");
+        let mut short = String::from("ok");
+        assert!(!truncate_in_place(&mut short, 10));
+        assert_eq!(short, "ok");
     }
 
     #[test]

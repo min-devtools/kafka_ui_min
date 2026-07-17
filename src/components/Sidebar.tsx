@@ -1,6 +1,8 @@
 import { useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useQueryClient } from "@tanstack/react-query";
 import { Badge } from "../ui/Badge";
+import { ToolButton } from "../ui/ToolButton";
 import { ContextMenu, type ContextMenuItem } from "../ui/ContextMenu";
 import { useApp } from "../store";
 import { useActiveConnection, useClusterMeta, useGroups } from "../lib/queries";
@@ -28,7 +30,28 @@ export function Sidebar() {
     connections, activeConnId, setActiveConn, deleteConnection, setEditingConn,
     tabs, activeTabId, openTab, activeTopic, setActiveTopic, showToast,
     openMessagesTab, topicRecency,
-  } = useApp();
+  } = useApp(
+    useShallow((s) => ({
+      connections: s.connections, activeConnId: s.activeConnId, setActiveConn: s.setActiveConn,
+      deleteConnection: s.deleteConnection, setEditingConn: s.setEditingConn, tabs: s.tabs,
+      activeTabId: s.activeTabId, openTab: s.openTab, activeTopic: s.activeTopic,
+      setActiveTopic: s.setActiveTopic, showToast: s.showToast,
+      openMessagesTab: s.openMessagesTab, topicRecency: s.topicRecency,
+    })),
+  );
+
+  // keyboard/AT support for the clickable divs: Enter/Space activates
+  const pressable = (onClick: () => void) => ({
+    role: "button" as const,
+    tabIndex: 0,
+    onClick,
+    onKeyDown: (e: React.KeyboardEvent) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        onClick();
+      }
+    },
+  });
 
   const activeKind = tabs.find((t) => t.id === activeTabId)?.kind;
   const q = filter.trim().toLowerCase();
@@ -92,10 +115,10 @@ export function Sidebar() {
           <div className="group-title"><span>Connections</span><span>{connections.length ? "saved" : ""}</span></div>
           <div
             className={`nav-item ${activeKind === "connection" ? "active" : ""}`}
-            onClick={() => {
+            {...pressable(() => {
               setEditingConn(null);
               openTab("connection");
-            }}
+            })}
           >
             <Icon name="plus" className="soft-blue" /><span>New Connection</span><Badge>setup</Badge>
           </div>
@@ -103,10 +126,10 @@ export function Sidebar() {
             <div
               key={c.id}
               className={`nav-item ${c.id === activeConnId ? "active" : ""}`}
-              onClick={() => {
+              {...pressable(() => {
                 setActiveConn(c.id);
                 void queryClient.invalidateQueries();
-              }}
+              })}
               onContextMenu={(e) => {
                 e.preventDefault();
                 setConnMenu({ x: e.clientX, y: e.clientY, id: c.id });
@@ -127,7 +150,7 @@ export function Sidebar() {
             <div
               key={item.kind}
               className={`nav-item ${activeKind === item.kind ? "active" : ""}`}
-              onClick={() => openTab(item.kind)}
+              {...pressable(() => openTab(item.kind))}
             >
               <Icon name={item.icon} className={item.iconClass} />
               <span>{item.label}</span>
@@ -144,11 +167,17 @@ export function Sidebar() {
             <span>{meta.data ? topicList.length : conn ? "…" : ""}</span>
           </div>
           {!conn && <div className="empty-note">Connect to a cluster to load topics.</div>}
+          {conn && meta.isError && (
+            <div className="empty-note">
+              Cluster unreachable — {String(meta.error)}{" "}
+              <ToolButton onClick={() => void meta.refetch()}><Icon name="refresh" /> Retry</ToolButton>
+            </div>
+          )}
           {shownTopics.map((t) => (
             <div
               key={t.name}
               className={`index-item ${t.name === activeTopic ? "active" : ""}`}
-              onClick={() => setActiveTopic(t.name)}
+              {...pressable(() => setActiveTopic(t.name))}
               onDoubleClick={() => {
                 setActiveTopic(t.name);
                 openMessagesTab(t.name);
@@ -165,7 +194,7 @@ export function Sidebar() {
             </div>
           ))}
           {hiddenTopicCount > 0 && (
-            <div className="nav-item" onClick={() => openTab("topics")}>
+            <div className="nav-item" {...pressable(() => openTab("topics"))}>
               <Icon name="more-horizontal" className="soft-orange" />
               <span>{hiddenTopicCount} more…</span>
             </div>
@@ -175,10 +204,10 @@ export function Sidebar() {
         {conn && (
           <div className="group">
             <div className="group-title"><span>Cluster</span><span /></div>
-            <div className="nav-item" onClick={() => openTab("groups")}>
+            <div className="nav-item" {...pressable(() => openTab("groups"))}>
               <Icon name="groups" /><span>Consumer groups</span><span>{groups.data?.length || ""}</span>
             </div>
-            <div className="nav-item" onClick={() => openTab("cluster")}>
+            <div className="nav-item" {...pressable(() => openTab("cluster"))}>
               <Icon name="cluster" /><span>Brokers</span><span>{meta.data?.brokers.length || ""}</span>
             </div>
           </div>

@@ -19,7 +19,8 @@ export function ProduceView({ active }: { active: boolean }) {
   const conn = useActiveConnection();
   const meta = useClusterMeta();
   const queryClient = useQueryClient();
-  const { activeTopic, showToast } = useApp();
+  const activeTopic = useApp((s) => s.activeTopic);
+  const showToast = useApp((s) => s.showToast);
 
   const [topic, setTopic] = useState(activeTopic ?? "");
   const [partition, setPartition] = useState<number | null>(null);

@@ -1,4 +1,5 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { useShallow } from "zustand/react/shallow";
 import { Icon } from "../../ui/Icon";
 import { ToolButton } from "../../ui/ToolButton";
 import { useApp } from "../../store";
@@ -10,7 +11,14 @@ export function SettingsView({ active }: { active: boolean }) {
   const {
     theme, setTheme, compact, toggleCompact, vimMode, toggleVim,
     uiFontSize, setUiFontSize, uiFont, setUiFont, editorFont, setEditorFont, showToast,
-  } = useApp();
+  } = useApp(
+    useShallow((s) => ({
+      theme: s.theme, setTheme: s.setTheme, compact: s.compact, toggleCompact: s.toggleCompact,
+      vimMode: s.vimMode, toggleVim: s.toggleVim, uiFontSize: s.uiFontSize, setUiFontSize: s.setUiFontSize,
+      uiFont: s.uiFont, setUiFont: s.setUiFont, editorFont: s.editorFont, setEditorFont: s.setEditorFont,
+      showToast: s.showToast,
+    })),
+  );
   const fonts = useSystemFonts();
   const fontList = fonts.data ?? [];
 

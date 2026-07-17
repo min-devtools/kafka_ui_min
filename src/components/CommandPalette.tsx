@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useApp } from "../store";
 import { useClusterMeta, useGroups } from "../lib/queries";
 import { Icon, type IconName } from "../ui/Icon";
@@ -16,7 +17,14 @@ export function CommandPalette() {
   const inputRef = useRef<HTMLInputElement>(null);
   const meta = useClusterMeta();
   const groups = useGroups();
-  const app = useApp();
+  const app = useApp(
+    useShallow((s) => ({
+      commandOpen: s.commandOpen, connections: s.connections, openTab: s.openTab,
+      openMessagesTab: s.openMessagesTab, setEditingConn: s.setEditingConn, toggleLeft: s.toggleLeft,
+      toggleRight: s.toggleRight, toggleTheme: s.toggleTheme, toggleCompact: s.toggleCompact,
+      setActiveConn: s.setActiveConn, setActiveTopic: s.setActiveTopic, setCommandOpen: s.setCommandOpen,
+    })),
+  );
 
   useEffect(() => {
     if (app.commandOpen) {

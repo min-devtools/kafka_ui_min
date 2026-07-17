@@ -48,6 +48,14 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / 2 ** (10 * i)).toFixed(i ? 1 : 0)} ${units[i]}`;
 }
 
+/** Kafka ms-timestamp → "YYYY-MM-DD HH:mm:ss" in the user's local timezone. */
+export function formatTs(ms: number | null | undefined): string {
+  if (!ms) return "—";
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
 export function formatDocCount(count: number): string {
   if (count >= 1e9) return `${(count / 1e9).toFixed(1)}b`;
   if (count >= 1e6) return `${(count / 1e6).toFixed(1)}m`;

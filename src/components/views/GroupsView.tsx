@@ -46,7 +46,8 @@ export function GroupsView({ active }: { active: boolean }) {
   const groups = useGroups();
   const offsets = useGroupOffsets(selected);
   const queryClient = useQueryClient();
-  const { showToast, openDialog } = useApp();
+  const showToast = useApp((s) => s.showToast);
+  const openDialog = useApp((s) => s.openDialog);
 
   const q = filter.trim().toLowerCase();
   const rows = (groups.data ?? []).filter((g) => !q || g.name.toLowerCase().includes(q));

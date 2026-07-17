@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { ToolButton } from "../ui/ToolButton";
 import { Badge } from "../ui/Badge";
 import { Icon } from "../ui/Icon";
+import { useShallow } from "zustand/react/shallow";
 import { useApp } from "../store";
 import { useActiveConnection, useClusterMeta } from "../lib/queries";
 import logo from "../assets/logo.png";
@@ -10,7 +11,13 @@ import { themeBase } from "../lib/themes";
 export function Titlebar() {
   const conn = useActiveConnection();
   const meta = useClusterMeta();
-  const { toggleTheme, toggleCompact, setCommandOpen, showToast, theme, openTab, openMessagesTab, runActive, tabs, activeTabId } = useApp();
+  const { toggleTheme, toggleCompact, setCommandOpen, showToast, theme, openTab, openMessagesTab, runActive, tabs, activeTabId } = useApp(
+    useShallow((s) => ({
+      toggleTheme: s.toggleTheme, toggleCompact: s.toggleCompact, setCommandOpen: s.setCommandOpen,
+      showToast: s.showToast, theme: s.theme, openTab: s.openTab, openMessagesTab: s.openMessagesTab,
+      runActive: s.runActive, tabs: s.tabs, activeTabId: s.activeTabId,
+    })),
+  );
   const queryClient = useQueryClient();
   const activeKind = tabs.find((t) => t.id === activeTabId)?.kind;
   const activeIsMessages = activeKind === "messages" || activeKind === "produce";

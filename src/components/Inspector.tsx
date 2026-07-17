@@ -5,6 +5,7 @@ import { MiniTabs } from "../ui/MiniTabs";
 import { ToolButton } from "../ui/ToolButton";
 import { Icon } from "../ui/Icon";
 import { JsonView } from "../ui/JsonView";
+import { formatTs } from "../lib/format";
 import { useApp } from "../store";
 
 function prettyPayload(payload: string): unknown {
@@ -17,7 +18,8 @@ function prettyPayload(payload: string): unknown {
 
 export function Inspector() {
   const [pane, setPane] = useState("payload");
-  const { selectedMsg, showToast } = useApp();
+  const selectedMsg = useApp((s) => s.selectedMsg);
+  const showToast = useApp((s) => s.showToast);
 
   return (
     <aside className="inspector">
@@ -72,7 +74,9 @@ export function Inspector() {
               <Kv label="partition">{selectedMsg.partition}</Kv>
               <Kv label="offset">{selectedMsg.offset}</Kv>
               <Kv label="timestamp">
-                {selectedMsg.timestamp ? new Date(selectedMsg.timestamp).toISOString() : "—"}
+                {selectedMsg.timestamp
+                  ? `${formatTs(selectedMsg.timestamp)} (local) · ${new Date(selectedMsg.timestamp).toISOString()}`
+                  : "—"}
               </Kv>
               <Kv label="key">{selectedMsg.key ?? "—"}</Kv>
               {selectedMsg.headers.map(([k, v]) => (

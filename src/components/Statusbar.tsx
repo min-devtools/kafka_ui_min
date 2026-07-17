@@ -1,11 +1,17 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { useShallow } from "zustand/react/shallow";
 import { useApp } from "../store";
 import { useActiveConnection, useClusterMeta } from "../lib/queries";
 
 export function Statusbar() {
   const conn = useActiveConnection();
   const meta = useClusterMeta();
-  const { tabs, activeTabId, activeTopic, openTab, setEditingConn, openMessagesTab } = useApp();
+  const { tabs, activeTabId, activeTopic, openTab, setEditingConn, openMessagesTab } = useApp(
+    useShallow((s) => ({
+      tabs: s.tabs, activeTabId: s.activeTabId, activeTopic: s.activeTopic,
+      openTab: s.openTab, setEditingConn: s.setEditingConn, openMessagesTab: s.openMessagesTab,
+    })),
+  );
 
   const activeTab = tabs.find((t) => t.id === activeTabId);
   const statusColor = !conn
