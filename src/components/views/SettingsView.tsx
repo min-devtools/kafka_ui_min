@@ -85,6 +85,9 @@ export function SettingsView({ active }: { active: boolean }) {
             <div className="shortcut-row"><span>Increase font</span><span className="kbd">⌘+</span></div>
             <div className="shortcut-row"><span>Decrease font</span><span className="kbd">⌘−</span></div>
             <div className="shortcut-row"><span>Open settings</span><span className="kbd">⌘,</span></div>
+            <div className="shortcut-row"><span>Rename / edit selected connection</span><span className="kbd">⌘E</span></div>
+            <div className="shortcut-row"><span>Duplicate selected connection</span><span className="kbd">⌘D</span></div>
+            <div className="shortcut-row"><span>Delete selected connection</span><span className="kbd">⌘⌫</span></div>
           </div>
         </section>
 

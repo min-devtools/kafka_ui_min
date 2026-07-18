@@ -302,9 +302,9 @@ export function FullTopicSearch({
             </tr></thead>
             <tbody>{visible.map((message) => (
               <tr key={`${message.partition}-${message.offset}`} className={selectedMsg?.partition === message.partition && selectedMsg.offset === message.offset ? "selected" : ""} onClick={() => selectMsg(message)}>
-                <td>{message.partition}</td><td>{message.offset}</td>
-                <td>{formatTs(message.timestamp)}</td>
-                <td className="truncate-cell">{message.key ?? "—"}</td><td className="truncate-cell">{message.payload.slice(0, 500)}</td>
+                <td className="cell-number">{message.partition}</td><td className="cell-number">{message.offset}</td>
+                <td className="cell-date">{formatTs(message.timestamp)}</td>
+                <td className="truncate-cell cell-id">{message.key ?? "—"}</td><td className="truncate-cell">{message.payload.slice(0, 500)}</td>
               </tr>
             ))}</tbody>
           </table>

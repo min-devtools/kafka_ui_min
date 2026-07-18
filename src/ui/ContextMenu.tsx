@@ -5,6 +5,8 @@ export interface ContextMenuItem {
   icon: IconName;
   label: string;
   strong?: boolean;
+  /** shortcut hint rendered right-aligned (e.g. "⌘D") */
+  kbd?: string;
   onClick: () => void;
 }
 
@@ -55,7 +57,7 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
         >
           <Icon name={item.icon} size={15} />
           {item.strong ? <strong>{item.label}</strong> : <span>{item.label}</span>}
-          <span />
+          {item.kbd ? <span className="kbd">{item.kbd}</span> : <span />}
         </div>
       ))}
     </div>

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useQueryClient } from "@tanstack/react-query";
 import { Badge } from "../ui/Badge";
@@ -28,12 +28,14 @@ export function Sidebar() {
   const queryClient = useQueryClient();
   const {
     connections, activeConnId, setActiveConn, deleteConnection, setEditingConn, setConnections,
+    saveConnection, openDialog,
     tabs, activeTabId, openTab, activeTopic, setActiveTopic, showToast,
     openMessagesTab, topicRecency,
   } = useApp(
     useShallow((s) => ({
       connections: s.connections, activeConnId: s.activeConnId, setActiveConn: s.setActiveConn,
       deleteConnection: s.deleteConnection, setEditingConn: s.setEditingConn, setConnections: s.setConnections,
+      saveConnection: s.saveConnection, openDialog: s.openDialog,
       tabs: s.tabs, activeTabId: s.activeTabId, openTab: s.openTab, activeTopic: s.activeTopic,
       setActiveTopic: s.setActiveTopic, showToast: s.showToast,
       openMessagesTab: s.openMessagesTab, topicRecency: s.topicRecency,
@@ -83,6 +85,54 @@ export function Sidebar() {
   const shownTopics = q ? topicList.slice(0, 30) : topicList.slice(0, SIDEBAR_CAP);
   const hiddenTopicCount = q ? 0 : Math.max(0, topicList.length - SIDEBAR_CAP);
 
+  // ⌘E / ⌘D / ⌘⌫ on the active connection — see design-systems/SHORTCUTS.md
+  const editConn = (id: string) => {
+    setEditingConn(id);
+    openTab("connection");
+  };
+  const duplicateConn = (id: string) => {
+    const c = connections.find((x) => x.id === id);
+    if (!c) return;
+    const copy = { ...c, id: crypto.randomUUID(), name: `${c.name} copy` };
+    saveConnection(copy);
+    showToast("Connection duplicated", copy.name);
+  };
+  const removeConn = async (id: string) => {
+    const c = connections.find((x) => x.id === id);
+    const ok = await openDialog({
+      kind: "confirm",
+      title: "Remove connection?",
+      message: `"${c?.name ?? id}" and its stored credentials will be deleted.`,
+      confirmLabel: "Remove",
+      danger: true,
+    });
+    if (ok === null) return;
+    deleteConnection(id);
+    showToast("Connection removed", "Saved connection deleted from this workspace.");
+  };
+
+  // WebKit (Tauri macOS) doesn't focus rows on click, so per-node onKeyDown won't fire.
+  // Listen globally and act on the active connection; stay out of inputs and open dialogs.
+  useEffect(() => {
+    if (!activeConnId) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (useApp.getState().dialog) return;
+      const el = document.activeElement as HTMLElement | null;
+      const editable = !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
+      if (editable) return;
+      const mod = event.metaKey || event.ctrlKey;
+      if (!mod || event.shiftKey) return;
+      const key = event.key.toLowerCase();
+      if (key === "d") { event.preventDefault(); duplicateConn(activeConnId); }
+      else if (key === "e") { event.preventDefault(); editConn(activeConnId); }
+      // ⌘⌫ only — a plain Backspace outside inputs is too easy to hit by accident
+      else if (event.key === "Delete" || event.key === "Backspace") { event.preventDefault(); void removeConn(activeConnId); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeConnId, connections]);
+
   const connMenuItems: ContextMenuItem[] = connMenu
     ? [
         {
@@ -94,22 +144,9 @@ export function Sidebar() {
             void queryClient.invalidateQueries();
           },
         },
-        {
-          icon: "pencil",
-          label: "Edit connection",
-          onClick: () => {
-            setEditingConn(connMenu.id);
-            openTab("connection");
-          },
-        },
-        {
-          icon: "trash",
-          label: "Remove",
-          onClick: () => {
-            deleteConnection(connMenu.id);
-            showToast("Connection removed", "Saved connection deleted from this workspace.");
-          },
-        },
+        { icon: "pencil", label: "Edit connection", kbd: "⌘E", onClick: () => editConn(connMenu.id) },
+        { icon: "copy", label: "Duplicate", kbd: "⌘D", onClick: () => duplicateConn(connMenu.id) },
+        { icon: "trash", label: "Remove", kbd: "⌘⌫", onClick: () => void removeConn(connMenu.id) },
       ]
     : [];
 

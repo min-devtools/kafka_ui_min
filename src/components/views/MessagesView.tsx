@@ -14,7 +14,7 @@ import { useApp } from "../../store";
 import { useActiveConnection, useClusterMeta } from "../../lib/queries";
 import { consumeMessages, type ConsumeFrom } from "../../lib/kafka";
 import { setMessageFields } from "../../lib/monaco";
-import { formatTs, formatValue, getPath } from "../../lib/format";
+import { formatTs, formatValue, getPath, valueClass } from "../../lib/format";
 import { isTypingTarget } from "../../lib/dom";
 import type { MessageRec } from "../../lib/types";
 import { FullTopicSearch } from "./FullTopicSearch";
@@ -194,6 +194,10 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
 
   // auto-load newest messages once per topic when the tab is visible
   const autoLoadedTopic = useRef<string | null>(null);
+  // re-arm on tab leave: a failed attempt (broker down) retries next visit instead of sticking forever
+  useEffect(() => {
+    if (!active) autoLoadedTopic.current = null;
+  }, [active]);
   useEffect(() => {
     if (!active || !conn || !topic || loading || messages !== null) return;
     if (autoLoadedTopic.current === topic) return; // one attempt per topic — no retry loop on error
@@ -479,7 +483,6 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
       {jsModal}
       <div className="index-table-wrap">
         {!conn && <div className="empty-note">Connect to a cluster first.</div>}
-        {loading && <div className="empty-note">Loading messages…</div>}
         {conn && messages === null && !loading && (
           <div className="empty-note">Pick a topic — newest messages load automatically (⌘↵ or the play button reloads). Fetches are read-only, no offsets are committed.</div>
         )}
@@ -508,15 +511,18 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
                   }
                   onClick={() => selectMsg(m)}
                 >
-                  <td>{m.partition}</td>
-                  <td>{m.offset}</td>
-                  <td>{formatTs(m.timestamp)}</td>
-                  <td style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 140 }}>{m.key ?? "—"}</td>
-                  {paths.map((p) => (
-                    <td key={p} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 200 }}>
-                      {formatValue(getPath(m.json, stripValue(p)))}
-                    </td>
-                  ))}
+                  <td className="cell-number">{m.partition}</td>
+                  <td className="cell-number">{m.offset}</td>
+                  <td className="cell-date">{formatTs(m.timestamp)}</td>
+                  <td className="cell-id" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 140 }}>{m.key ?? "—"}</td>
+                  {paths.map((p) => {
+                    const v = getPath(m.json, stripValue(p));
+                    return (
+                      <td key={p} className={`cell-${valueClass(p, v)}`} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 200 }}>
+                        {formatValue(v)}
+                      </td>
+                    );
+                  })}
                   <td style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 480 }}>{m.payload.slice(0, 500)}</td>
                 </tr>
               ))}
