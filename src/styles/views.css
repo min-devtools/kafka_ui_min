@@ -641,6 +641,11 @@ body.light .docs-preview-editor { color: var(--editor-fg); }
 .full-search-view.active { display: flex; flex-direction: column; }
 .full-search-view .index-table-wrap { flex: 1; }
 
+/* flex, not grid: this view has a single scrollable child (no toolbar row),
+   so a fixed grid-template-rows count misplaces it into the 46px row */
+.group-detail-view.active { display: flex; flex-direction: column; }
+.group-detail-view .index-table-wrap { flex: 1; min-height: 0; }
+
 .full-search-head, .full-search-controls, .full-search-progress, .full-search-foot {
   display: flex;
   align-items: center;

@@ -230,7 +230,7 @@ export function GroupDetailView({ tabId, active }: { tabId: string; active: bool
   };
 
   return (
-    <section className={`content indexes-view ${active ? "active" : ""}`}>
+    <section className={`content group-detail-view ${active ? "active" : ""}`}>
       <div className="index-table-wrap" style={{ padding: 12 }}>
         {!conn && <div className="empty-note">Connect to a cluster to inspect this group.</div>}
         {conn && group && (
