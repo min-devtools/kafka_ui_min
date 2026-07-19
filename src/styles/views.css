@@ -211,7 +211,7 @@ body.light .editor-pane { background: var(--editor-bg); }
   border: 1px solid var(--line);
   border-radius: 999px;
   background: var(--pane-2);
-  cursor: pointer;
+  cursor: default;
   font: 0.8462rem/1 var(--font-mono);
 }
 
@@ -478,7 +478,7 @@ body.light .docs-preview-editor { color: var(--editor-fg); }
   border: 1px solid var(--line-2);
   border-radius: 14px;
   background: color-mix(in oklab, var(--pane), transparent 4%);
-  cursor: pointer;
+  cursor: default;
   transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
 }
 
@@ -794,7 +794,7 @@ body.light .docs-preview-editor { color: var(--editor-fg); }
   border: 0;
   background: var(--pane-2);
   color: var(--text-3);
-  cursor: pointer;
+  cursor: default;
   font: 700 0.8462rem/1 var(--font-mono);
   letter-spacing: 0.05em;
 }
@@ -833,7 +833,7 @@ body.light .docs-preview-editor { color: var(--editor-fg); }
   background: transparent;
   color: var(--text-3);
   font-size: 1rem;
-  cursor: pointer;
+  cursor: default;
 }
 
 .condition-remove:hover { color: var(--red); background: var(--pane-3); }
@@ -876,7 +876,7 @@ body.light .docs-preview-editor { color: var(--editor-fg); }
   padding: 0 4px;
   border-radius: 4px;
   color: var(--text-3);
-  cursor: pointer;
+  cursor: default;
 }
 
 .th-remove:hover { color: var(--red); background: var(--pane-3); }

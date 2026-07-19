@@ -6,10 +6,10 @@ import { useActiveConnection, useClusterMeta } from "../lib/queries";
 export function Statusbar() {
   const conn = useActiveConnection();
   const meta = useClusterMeta();
-  const { tabs, activeTabId, activeTopic, openTab, setEditingConn, openMessagesTab } = useApp(
+  const { tabs, activeTabId, openTab, setEditingConn } = useApp(
     useShallow((s) => ({
-      tabs: s.tabs, activeTabId: s.activeTabId, activeTopic: s.activeTopic,
-      openTab: s.openTab, setEditingConn: s.setEditingConn, openMessagesTab: s.openMessagesTab,
+      tabs: s.tabs, activeTabId: s.activeTabId,
+      openTab: s.openTab, setEditingConn: s.setEditingConn,
     })),
   );
 
@@ -38,16 +38,6 @@ export function Statusbar() {
         <span style={{ color: statusColor }}>
           {!conn ? "setup required" : meta.isError ? "unreachable" : meta.data ? "connected" : "connecting…"}
         </span>
-      </div>
-      <div>
-        <span
-          style={{ cursor: activeTopic ? "pointer" : undefined }}
-          title={activeTopic ? "Open Messages (⌘N)" : undefined}
-          onClick={() => activeTopic && openMessagesTab(activeTopic)}
-        >
-          {activeTopic ?? "no topic selected"}
-        </span>
-        <span>{meta.data ? `${meta.data.topics.filter((t) => !t.internal).length} topics` : "0 topics"}</span>
       </div>
       <div className="right-status">
         <span>{meta.data ? `${meta.data.brokers.length} brokers` : ""}</span>
