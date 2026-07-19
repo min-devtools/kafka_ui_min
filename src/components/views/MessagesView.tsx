@@ -8,6 +8,7 @@ import { DateTimeModal } from "../../ui/DateTimeModal";
 import { SortTh } from "../../ui/SortTh";
 import { Icon } from "../../ui/Icon";
 import { LoadingBar } from "../../ui/LoadingBar";
+import { SectionVeil } from "../../ui/SectionVeil";
 import { Pagination } from "../../ui/Pagination";
 import { useSortedRows } from "../../lib/useSort";
 import { useApp } from "../../store";
@@ -482,6 +483,8 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
       )}
       {jsModal}
       <div className="index-table-wrap">
+        {/* initial load only — reloads with a table already on screen keep the LoadingBar */}
+        <SectionVeil on={loading && messages === null} label="Loading messages…" />
         {!conn && <div className="empty-note">Connect to a cluster first.</div>}
         {conn && messages === null && !loading && (
           <div className="empty-note">Pick a topic — newest messages load automatically (⌘↵ or the play button reloads). Fetches are read-only, no offsets are committed.</div>

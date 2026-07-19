@@ -629,7 +629,7 @@ body.light .docs-preview-editor { color: var(--editor-fg); }
   outline: none;
 }
 
-.index-table-wrap { min-height: 0; overflow: auto; }
+.index-table-wrap { min-height: 0; overflow: auto; position: relative; /* hosts .section-veil */ }
 
 .full-search-view {
   min-height: 0;

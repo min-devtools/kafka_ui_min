@@ -5,6 +5,7 @@ import { Badge } from "../../ui/Badge";
 import { ToolButton } from "../../ui/ToolButton";
 import { Icon } from "../../ui/Icon";
 import { SortTh } from "../../ui/SortTh";
+import { SectionVeil } from "../../ui/SectionVeil";
 import { useSortedRows } from "../../lib/useSort";
 import { ContextMenu } from "../../ui/ContextMenu";
 import { useApp } from "../../store";
@@ -108,6 +109,8 @@ export function TopicsView({ active }: { active: boolean }) {
         </span>
       </div>
       <div className="index-table-wrap">
+        {/* initial load only — meta.isLoading is false once data exists, so background polls don't flash it */}
+        <SectionVeil on={!!conn && meta.isLoading} label="Loading topics…" />
         {creating && (
           <div className="panel" style={{ margin: 12 }}>
             <h3>Create topic</h3>
