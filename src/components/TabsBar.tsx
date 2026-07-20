@@ -19,6 +19,12 @@ export function TabsBar() {
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const activeRef = useRef<HTMLButtonElement>(null);
+
+  // the bar scrolls, so a tab reached by ⌘1-9 / the palette / a close can be off-screen
+  useEffect(() => {
+    activeRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activeTabId]);
 
   useEffect(() => {
     if (editingId) inputRef.current?.select();
@@ -39,6 +45,7 @@ export function TabsBar() {
         return (
         <button
           key={tab.id}
+          ref={tab.id === activeTabId ? activeRef : undefined}
           type="button"
           draggable={!editingId}
           className={`tab ${tab.id === activeTabId ? "active" : ""} ${dragId === tab.id ? "dragging" : ""} ${overId === tab.id && dragId && dragId !== tab.id ? "drag-over" : ""}`}
@@ -80,7 +87,7 @@ export function TabsBar() {
             setDragId(null);
             setOverId(null);
           }}
-          title={conn ? `${tab.title} · ${conn.name}` : tab.kind === "messages" ? "Double-click to rename · right-click for menu" : undefined}
+          title={conn ? `${tab.title} Â· ${conn.name}` : tab.kind === "messages" ? "Double-click to rename Â· right-click for menu" : undefined}
         >
           {conn && <span className="conn-dot" />}
           <Icon name={tab.icon} className={tab.iconClass} />
@@ -105,7 +112,7 @@ export function TabsBar() {
           {conn && !editingId && <span className="tab-conn">{conn.name}</span>}
           <span
             className="tab-close"
-            title={`Close ${tab.title} (⌘W)`}
+            title={`Close ${tab.title} (âW)`}
             aria-label={`Close ${tab.title}`}
             onClick={(e) => {
               e.stopPropagation();
@@ -120,7 +127,7 @@ export function TabsBar() {
       <button
         type="button"
         className="tab-add"
-        title="Open messages for active topic (⌘N)"
+        title="Open messages for active topic (âN)"
         onClick={() => openMessagesTab()}
         onDragOver={(e) => {
           if (!dragId) return;
@@ -155,7 +162,7 @@ export function TabsBar() {
                   },
                 }]
               : []),
-            { icon: "x" as const, label: "Close (⌘W)", onClick: () => closeTab(menu.id) },
+            { icon: "x" as const, label: "Close (âW)", onClick: () => closeTab(menu.id) },
             {
               icon: "rows" as const,
               label: "Close others",
