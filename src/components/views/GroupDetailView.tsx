@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Badge } from "../../ui/Badge";
 import { ToolButton } from "../../ui/ToolButton";
@@ -58,6 +58,25 @@ function ResetModal({ group, topic, rows, initialPartition, busy, onClose, onApp
     const value = mode === "offset" ? Math.floor(Number(offset)) : mode === "timestamp" ? new Date(stamp).getTime() : undefined;
     onApply(allPicked ? null : [...picked].sort((a, b) => a - b), mode, value);
   };
+
+  // Esc cancels, Enter resets (respecting valid/busy, same guard as the button's disabled
+  // state) — capture phase, mirrors Dialog.tsx. Skipped while the nested DateTimeModal
+  // (pickingTime) is open so its own handler is the one that gets the key.
+  useEffect(() => {
+    if (pickingTime) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Enter" && e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "Escape") {
+        if (!busy) onClose();
+      } else if (valid && !busy) {
+        apply();
+      }
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [pickingTime, busy, valid, onClose, apply]);
 
   return (
     <div className="modal" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>

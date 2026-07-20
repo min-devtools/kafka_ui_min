@@ -133,6 +133,26 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
     setJsModalOpen(false);
   };
 
+  // Esc closes the JS filter modal; Enter saves — but not while typing inside the Monaco
+  // editor, where Enter must insert a newline (and drive vim-mode keys). Capture phase so
+  // this swallows the key before app-level shortcuts, same as Dialog.tsx.
+  useEffect(() => {
+    if (!jsModalOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        setJsModalOpen(false);
+      } else if (e.key === "Enter" && !isTypingTarget(e.target) && jsDraft.trim()) {
+        e.preventDefault();
+        e.stopPropagation();
+        saveJsFilter();
+      }
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [jsModalOpen, jsDraft, saveJsFilter]);
+
   useEffect(() => {
     if (tabTopic) setTopic(tabTopic);
   }, [tabTopic]);

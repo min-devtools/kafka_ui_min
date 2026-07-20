@@ -96,24 +96,14 @@ export function ConnectionView({ active }: { active: boolean }) {
     return ok;
   };
 
-  const save = async () => {
-    const ok = await runHandshake();
+  const save = () => {
     saveConnection(draft);
     setActiveConn(draft.id);
     void queryClient.invalidateQueries();
-    showToast(
-      ok ? "Connection saved" : "Saved with warnings",
-      ok
-        ? `${draft.name} is now the active connection.`
-        : `${draft.name} saved, but some handshake checks failed.`,
-      ok ? "ok" : "warn",
-    );
-    if (ok) {
-      // done with setup — close this tab instead of leaving it around
-      setEditingConn(null);
-      closeTab("connection");
-      openTab("topics");
-    }
+    showToast("Connection saved", `${draft.name} is now the active connection.`, "ok");
+    setEditingConn(null);
+    closeTab("connection");
+    openTab("topics");
   };
 
   return (
@@ -127,7 +117,7 @@ export function ConnectionView({ active }: { active: boolean }) {
           <ToolButton disabled={testing} onClick={() => void runHandshake()}>
             <Icon name="zap" /> {testing ? "Testing…" : "Test handshake"}
           </ToolButton>
-          <ToolButton variant="primary" disabled={testing} onClick={() => void save()}>
+          <ToolButton variant="primary" onClick={save}>
             <Icon name="save" /> Save connection
           </ToolButton>
         </div>
