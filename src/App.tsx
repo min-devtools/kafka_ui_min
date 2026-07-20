@@ -87,11 +87,13 @@ export default function App() {
       retintMonaco(base, {
         accentPrimary: v("--accent-primary"),
         accentFocus: v("--accent-focus"),
+        syntaxKey: v("--blue-2"),
         syntaxString: v("--syntax-string"),
         syntaxNumber: v("--syntax-number"),
         syntaxBoolean: v("--syntax-boolean"),
         textPrimary: v("--text-primary"),
         textMuted: v("--text-muted"),
+        editorForeground: v("--editor-fg"),
         surfaceEditor: v("--surface-editor"),
         surfaceRaised: v("--surface-raised"),
         borderDefault: v("--border-default"),

@@ -4,13 +4,13 @@ import { Kv } from "../ui/Kv";
 import { MiniTabs } from "../ui/MiniTabs";
 import { ToolButton } from "../ui/ToolButton";
 import { Icon } from "../ui/Icon";
-import { JsonView } from "../ui/JsonView";
+import { JsonEditor } from "../ui/JsonEditor";
 import { formatTs } from "../lib/format";
 import { useApp } from "../store";
 
-function prettyPayload(payload: string): unknown {
+function prettyPayload(payload: string): string {
   try {
-    return JSON.parse(payload);
+    return JSON.stringify(JSON.parse(payload), null, 2);
   } catch {
     return payload;
   }
@@ -42,27 +42,32 @@ export function Inspector() {
         onChange={setPane}
       />
       {pane === "payload" && (
-        <div className="inspector-scroll">
-          {!selectedMsg && <div className="empty-note">Load messages and click a row — the payload shows here.</div>}
-          {selectedMsg && (
-            <>
-              <JsonView className="create-preview json-tree" value={prettyPayload(selectedMsg.payload)} />
-              {selectedMsg.truncated && (
-                <div className="empty-note">Payload truncated at 32 KB for display.</div>
-              )}
-              <div className="seg" style={{ padding: "8px 12px" }}>
-                <ToolButton
-                  onClick={async () => {
-                    await writeText(selectedMsg.payload);
-                    showToast("Copied", "Message payload copied to clipboard.");
-                  }}
-                >
-                  <Icon name="copy" /> Copy payload
-                </ToolButton>
-              </div>
-            </>
-          )}
-        </div>
+        !selectedMsg ? (
+          <div className="inspector-scroll">
+            <div className="empty-note">Load messages and click a row — the payload shows here.</div>
+          </div>
+        ) : (
+          <div className="inspector-edit">
+            <div className="inspector-editor-host">
+              <JsonEditor value={prettyPayload(selectedMsg.payload)} readOnly lineNumbers />
+            </div>
+            <div className="inspector-edit-foot">
+              <span className="seg">
+                <span style={{ color: "var(--text-3)" }}>
+                  {selectedMsg.truncated ? "Payload truncated at 32 KB" : "Read-only"}
+                </span>
+              </span>
+              <ToolButton
+                onClick={async () => {
+                  await writeText(selectedMsg.payload);
+                  showToast("Copied", "Message payload copied to clipboard.");
+                }}
+              >
+                <Icon name="copy" /> Copy payload
+              </ToolButton>
+            </div>
+          </div>
+        )
       )}
       {pane === "meta" && (
         <div className="inspector-scroll">

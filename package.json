@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "app": "tauri build --bundles app",
-    "run:release": "tauri build --no-bundle && ./src-tauri/target/release/kafkamin"
+    "run:release": "tauri build --no-bundle && ./src-tauri/target/release/kafkamin",
+    "test": "node --experimental-strip-types --test src/lib/*.test.mjs"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",

@@ -880,3 +880,27 @@ body.light .docs-preview-editor { color: var(--editor-fg); }
 }
 
 .th-remove:hover { color: var(--red); background: var(--pane-3); }
+
+/* Produce view: full-height payload editor */
+.produce-view { grid-template-rows: auto 1fr; }
+
+.produce-payload-card .create-form {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.produce-result {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--green), transparent 90%);
+  color: var(--text-2);
+  font-size: 0.9231rem;
+}
+
+.produce-result strong { color: var(--text); }
+

@@ -44,7 +44,7 @@ export function CommandPalette() {
       commandOpen: s.commandOpen, connections: s.connections, openTab: s.openTab,
       openMessagesTab: s.openMessagesTab, openGroupTab: s.openGroupTab, setEditingConn: s.setEditingConn, toggleLeft: s.toggleLeft,
       toggleRight: s.toggleRight, toggleTheme: s.toggleTheme, toggleCompact: s.toggleCompact,
-      setActiveConn: s.setActiveConn, setActiveTopic: s.setActiveTopic, setCommandOpen: s.setCommandOpen,
+      setActiveConn: s.setActiveConn, setActiveTopic: s.setActiveTopic, setCommandOpen: s.setCommandOpen, vimMode: s.vimMode,
     })),
   );
 
@@ -150,11 +150,13 @@ export function CommandPalette() {
             setCursor(0);
           }}
           onKeyDown={(e) => {
-            if (e.key === "ArrowDown") {
+            const next = e.key === "Tab" || (app.vimMode && e.ctrlKey && e.key.toLowerCase() === "n");
+            const previous = app.vimMode && e.ctrlKey && e.key.toLowerCase() === "p";
+            if (e.key === "ArrowDown" || next) {
               e.preventDefault();
-              setCursor((c) => Math.min(filtered.length - 1, c + 1));
+              setCursor((c) => Math.min(Math.max(0, filtered.length - 1), c + 1));
             }
-            if (e.key === "ArrowUp") {
+            if (e.key === "ArrowUp" || previous) {
               e.preventDefault();
               setCursor((c) => Math.max(0, c - 1));
             }

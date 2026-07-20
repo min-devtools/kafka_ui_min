@@ -7,6 +7,8 @@ import { StatusDot, type DotTone } from "../../ui/StatusDot";
 import { Icon } from "../../ui/Icon";
 import { JsonView } from "../../ui/JsonView";
 import { useApp } from "../../store";
+import { ColorPicker } from "../../ui/ColorPicker";
+import { connStyle } from "../../lib/connColor";
 import { fetchGroups, fetchMetadata } from "../../lib/kafka";
 import type { Connection, SaslMechanism, SecurityProtocol } from "../../lib/types";
 
@@ -51,6 +53,7 @@ export function ConnectionView({ active }: { active: boolean }) {
   const [checks, setChecks] = useState<Record<string, CheckState>>({});
   const [preview, setPreview] = useState<unknown>(null);
   const [testing, setTesting] = useState(false);
+  const [pickingColor, setPickingColor] = useState(false);
 
   useEffect(() => {
     setDraft(draftFrom(editing));
@@ -127,7 +130,21 @@ export function ConnectionView({ active }: { active: boolean }) {
           <h3>Bootstrap servers and authentication</h3>
           <div className="create-form">
             <FormRow label="Name">
-              <input value={draft.name} onChange={(e) => patch({ name: e.target.value })} />
+              <div className="seg" style={{ width: "100%" }}>
+                <input
+                  style={{ flex: 1, minWidth: 0 }}
+                  value={draft.name}
+                  onChange={(e) => patch({ name: e.target.value })}
+                />
+                <button
+                  type="button"
+                  className="conn-swatch"
+                  style={connStyle(draft.color)}
+                  title={draft.color ? `Color: ${draft.color}` : "Pick a color"}
+                  aria-label="Pick connection color"
+                  onClick={() => setPickingColor(true)}
+                />
+              </div>
             </FormRow>
             <FormRow label="Brokers">
               <input
@@ -201,6 +218,13 @@ export function ConnectionView({ active }: { active: boolean }) {
           </div>
         </div>
       </div>
+      {pickingColor && (
+        <ColorPicker
+          value={draft.color}
+          onPick={(color) => patch({ color: color ?? undefined })}
+          onClose={() => setPickingColor(false)}
+        />
+      )}
     </section>
   );
 }

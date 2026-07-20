@@ -1,4 +1,5 @@
 import type { IconName } from "../ui/Icon";
+import type { ConnColor } from "./connColor";
 
 export type SecurityProtocol = "plaintext" | "ssl" | "sasl_plaintext" | "sasl_ssl";
 export type SaslMechanism = "PLAIN" | "SCRAM-SHA-256" | "SCRAM-SHA-512";
@@ -6,6 +7,8 @@ export type SaslMechanism = "PLAIN" | "SCRAM-SHA-256" | "SCRAM-SHA-512";
 export interface Connection {
   id: string;
   name: string;
+  /** user-assigned identity color, drawn as the dot on every tab bound to this connection */
+  color?: ConnColor;
   /** comma-separated bootstrap servers, e.g. localhost:9092 */
   brokers: string;
   securityProtocol: SecurityProtocol;
@@ -135,6 +138,12 @@ export interface TabDef {
   title: string;
   icon: IconName;
   iconClass: string;
+  /**
+   * Connection this tab is bound to, fixed at creation and never reassigned — a tab
+   * represents one cluster for its whole life. Undefined on the global kinds
+   * (welcome/connection/settings), which belong to the app rather than to a cluster.
+   */
+  connId?: string;
 }
 
 export interface MessagesTabState {

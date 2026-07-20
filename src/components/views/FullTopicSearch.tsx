@@ -210,18 +210,19 @@ export function FullTopicSearch({
 
   // Lazy scan: keep the backend scanning only until it has buffered enough matches
   // for the viewed page plus a lookahead, then idle it. Paging forward resumes —
-  // the backend keeps its offsets, so nothing is re-scanned.
+  // the backend keeps its offsets, so nothing is re-scanned. A hidden tab pauses
+  // too: an invisible scan would otherwise burn CPU with no indicator anywhere.
   useEffect(() => {
     const id = searchIdRef.current;
     if (state !== "running" || !id) return;
     const target = Math.min((page + PREFETCH_PAGES) * pageSize, RESULT_CAP);
-    const shouldPause = results.length >= target;
+    const shouldPause = !active || results.length >= target;
     if (shouldPause !== pausedRef.current) {
       pausedRef.current = shouldPause;
       setPaused(shouldPause);
       void setFullTopicSearchPaused(id, shouldPause);
     }
-  }, [state, page, pageSize, results.length]);
+  }, [state, page, pageSize, results.length, active]);
 
   const percent = progress?.total ? Math.min(100, Math.round(progress.scanned / progress.total * 100)) : 0;
   const backendTruncatedForJs = usesJsFilter && (progress?.candidateMatches ?? 0) > RESULT_CAP;

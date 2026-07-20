@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { isThemeId, themeBase } from "./lib/themes";
 import { clampFontSize, DEFAULT_FONT_SIZE } from "./lib/fontScale";
 import type { Connection, GroupTabState, MessageRec, MessagesTabState, TabDef, TabKind } from "./lib/types";
+import { connTabId, pickConnTab, pruneConnTabs } from "./lib/tabs";
 
 const TAB_META: Record<TabKind, { title: string; icon: TabDef["icon"]; iconClass: string }> = {
   welcome: { title: "Welcome", icon: "sparkles", iconClass: "soft-blue" },
@@ -14,6 +15,16 @@ const TAB_META: Record<TabKind, { title: string; icon: TabDef["icon"]; iconClass
   produce: { title: "Produce", icon: "send", iconClass: "soft-green" },
   settings: { title: "Settings", icon: "settings", iconClass: "soft-orange" },
 };
+
+/**
+ * Kinds that belong to the app rather than to a cluster: one instance total, no connection.
+ * Every other kind is bound to a connection at creation and is a singleton *per connection*,
+ * so "Topics on prod" and "Topics on local" are two separate tabs that never swap clusters.
+ */
+const GLOBAL_KINDS: ReadonlySet<TabKind> = new Set<TabKind>(["welcome", "connection", "settings"]);
+
+/** the tab a connection opens into when you pick it in the sidebar and nothing of its is open yet */
+const DEFAULT_CONN_KIND: TabKind = "topics";
 
 function msgTabTitle(topic: string): string {
   return topic || "Messages";
@@ -43,8 +54,11 @@ function loadSession(): {
       if (typeof gt.group === "string" && gt.group) groupTabs[id] = { group: gt.group };
     }
     const tabs: TabDef[] = s.tabs
+      // connection-bound tabs from a session written before tabs carried connId have no
+      // cluster to belong to — drop them rather than resurrect them pointing at nothing
       .filter((t: TabDef) =>
-        TAB_META[t.kind] && (t.kind !== "messages" || msgTabs[t.id]) && (t.kind !== "group" || groupTabs[t.id]))
+        TAB_META[t.kind] && (t.kind !== "messages" || msgTabs[t.id]) && (t.kind !== "group" || groupTabs[t.id])
+        && (GLOBAL_KINDS.has(t.kind) || t.connId))
       .map((t: TabDef) => ({
         ...t,
         icon: TAB_META[t.kind].icon,
@@ -88,7 +102,13 @@ export interface DialogRequest {
 
 interface AppState {
   connections: Connection[];
-  activeConnId: string | null;
+  /**
+   * Connection last brought into focus. NOT the source of truth for which cluster a view
+   * talks to — that is the active tab's own `connId` (see the `activeConnId` selector).
+   * This only keeps the sidebar highlight and status badge on the last real connection
+   * while a global tab (Settings, Welcome) is in front.
+   */
+  lastConnId: string | null;
 
   tabs: TabDef[];
   activeTabId: string;
@@ -114,6 +134,8 @@ interface AppState {
   uiFont: string;
   /** mono font family for payloads ("" = design default) */
   editorFont: string;
+  /** editor font size in px — applies to JSON editors and payload views */
+  editorFontSize: number;
   leftCollapsed: boolean;
   rightCollapsed: boolean;
   commandOpen: boolean;
@@ -127,8 +149,11 @@ interface AppState {
   saveConnection: (conn: Connection) => void;
   deleteConnection: (id: string) => void;
   setActiveConn: (id: string | null) => void;
+  /** drop tabs whose connection no longer exists (after a delete, or on session restore) */
+  pruneConnTabs: () => void;
 
-  openTab: (kind: TabKind) => void;
+  /** open (or focus) `kind` for `connId`, defaulting to the connection in focus */
+  openTab: (kind: TabKind, connId?: string) => void;
   openMessagesTab: (topic?: string) => string;
   openGroupTab: (group: string) => void;
   closeTab: (id: string) => void;
@@ -148,6 +173,7 @@ interface AppState {
   setUiFontSize: (size: number) => void;
   setUiFont: (font: string) => void;
   setEditorFont: (font: string) => void;
+  setEditorFontSize: (size: number) => void;
   toggleLeft: () => void;
   toggleRight: () => void;
   setCommandOpen: (open: boolean) => void;
@@ -160,8 +186,22 @@ interface AppState {
 
 let toastTimer: number | undefined;
 
-export const activeConnection = (s: Pick<AppState, "connections" | "activeConnId">) =>
-  s.connections.find((c) => c.id === s.activeConnId) ?? null;
+/**
+ * Which connection the app is currently "in". Read from the active tab, because a tab owns
+ * its connection for life — activating a tab is what changes clusters, nothing else does.
+ * Global tabs carry no connection, so they fall back to the last one focused, which keeps
+ * the sidebar from going blank the moment you open Settings.
+ */
+export const activeConnId = (s: Pick<AppState, "tabs" | "activeTabId" | "lastConnId">) =>
+  s.tabs.find((t) => t.id === s.activeTabId)?.connId ?? s.lastConnId;
+
+export const activeConnection = (
+  s: Pick<AppState, "connections" | "tabs" | "activeTabId" | "lastConnId">,
+) => s.connections.find((c) => c.id === activeConnId(s)) ?? null;
+
+/** the connection a given tab belongs to — drives its color dot and name in the tab bar */
+export const tabConnection = (s: Pick<AppState, "connections">, tab: TabDef) =>
+  (tab.connId ? s.connections.find((c) => c.id === tab.connId) : null) ?? null;
 
 export const inspectorAvailable = (s: Pick<AppState, "tabs" | "activeTabId">) => {
   const tab = s.tabs.find((t) => t.id === s.activeTabId);
@@ -170,7 +210,7 @@ export const inspectorAvailable = (s: Pick<AppState, "tabs" | "activeTabId">) =>
 
 export const useApp = create<AppState>((set, get) => ({
   connections: [],
-  activeConnId: null,
+  lastConnId: null,
 
   tabs: session?.tabs ?? [{ id: "welcome", kind: "welcome", ...TAB_META.welcome }],
   activeTabId: session?.activeTabId ?? "welcome",
@@ -193,6 +233,7 @@ export const useApp = create<AppState>((set, get) => ({
   uiFontSize: clampFontSize(Number(localStorage.getItem("kafkamin:ui-font-size")) || DEFAULT_FONT_SIZE),
   uiFont: localStorage.getItem("kafkamin:ui-font") ?? "",
   editorFont: localStorage.getItem("kafkamin:editor-font") ?? "",
+  editorFontSize: clampFontSize(Number(localStorage.getItem("kafkamin:font-size")) || DEFAULT_FONT_SIZE),
   leftCollapsed: false,
   rightCollapsed: true,
   commandOpen: false,
@@ -210,32 +251,82 @@ export const useApp = create<AppState>((set, get) => ({
           : [...s.connections, conn];
       return { connections };
     }),
-  deleteConnection: (id) =>
+  // removing a connection takes its tabs with it — they have no cluster to talk to anymore
+  deleteConnection: (id) => {
     set((s) => ({
       connections: s.connections.filter((c) => c.id !== id),
-      activeConnId: s.activeConnId === id ? null : s.activeConnId,
-    })),
-  setActiveConn: (id) => set({ activeConnId: id, selectedMsg: null, activeTopic: null, topicRecency: [] }),
+      lastConnId: s.lastConnId === id ? null : s.lastConnId,
+    }));
+    get().pruneConnTabs();
+  },
 
-  openTab: (kind) => {
+  pruneConnTabs: () =>
+    set((s) => {
+      const out = pruneConnTabs(
+        s.tabs,
+        s.activeTabId,
+        s.connections.map((c) => c.id),
+        { id: "welcome", kind: "welcome", ...TAB_META.welcome },
+      );
+      if (!out) return s;
+      const msgTabs = { ...s.msgTabs };
+      const groupTabs = { ...s.groupTabs };
+      for (const t of out.dropped) {
+        delete msgTabs[t.id];
+        delete groupTabs[t.id];
+      }
+      return { tabs: out.tabs, activeTabId: out.activeTabId, msgTabs, groupTabs };
+    }),
+
+  /**
+   * Picking a connection means "go to that connection", not "retarget whatever is on screen":
+   * focus a tab it already owns, or open its default one. The tab in front keeps its own cluster.
+   */
+  setActiveConn: (id) => {
+    const s = get();
+    if (!id) return set({ lastConnId: null });
+    const target = pickConnTab(s.tabs, id, DEFAULT_CONN_KIND);
+    if (target) return get().activateTab(target);
+    set({ lastConnId: id });
+    get().openTab(DEFAULT_CONN_KIND, id);
+  },
+
+  openTab: (kind, connId) => {
     const s = get();
     if (kind === "messages") {
       get().openMessagesTab();
       return;
     }
-    const existing = s.tabs.find((t) => t.kind === kind);
-    if (existing) return set({ activeTabId: existing.id });
-    set({
-      tabs: [...s.tabs, { id: kind, kind, ...TAB_META[kind] }],
-      activeTabId: kind,
-    });
+    if (GLOBAL_KINDS.has(kind)) {
+      const existing = s.tabs.find((t) => t.kind === kind);
+      if (existing) return set({ activeTabId: existing.id });
+      return set({
+        tabs: [...s.tabs, { id: kind, kind, ...TAB_META[kind] }],
+        activeTabId: kind,
+      });
+    }
+    // no cluster to browse — send the user to set one up instead of opening an empty view
+    // that would later have to be silently rebound to whatever connection appears first
+    const cid = connId ?? activeConnId(s);
+    if (!cid) return get().openTab("connection");
+    const id = connTabId(kind, cid);
+    if (s.tabs.some((t) => t.id === id)) return get().activateTab(id);
+    set({ tabs: [...s.tabs, { id, kind, ...TAB_META[kind], connId: cid }] });
+    get().activateTab(id);
   },
 
   openMessagesTab: (topic) => {
     const s = get();
+    const cid = activeConnId(s);
+    if (!cid) {
+      get().openTab("connection");
+      return "";
+    }
     const tp = topic ?? s.activeTopic ?? "";
     if (tp) get().bumpTopicRecency(tp);
-    const existingId = s.tabs.find((t) => t.kind === "messages" && s.msgTabs[t.id]?.topic === tp)?.id;
+    const existingId = s.tabs.find(
+      (t) => t.kind === "messages" && t.connId === cid && s.msgTabs[t.id]?.topic === tp,
+    )?.id;
     if (existingId) {
       set({ activeTabId: existingId });
       return existingId;
@@ -244,7 +335,7 @@ export const useApp = create<AppState>((set, get) => ({
     const id = `messages-${n}`;
     set({
       msgTabCounter: n,
-      tabs: [...s.tabs, { id, kind: "messages", ...TAB_META.messages, title: msgTabTitle(tp) }],
+      tabs: [...s.tabs, { id, kind: "messages", ...TAB_META.messages, title: msgTabTitle(tp), connId: cid }],
       activeTabId: id,
       msgTabs: { ...s.msgTabs, [id]: { topic: tp } },
     });
@@ -253,44 +344,55 @@ export const useApp = create<AppState>((set, get) => ({
 
   openGroupTab: (group) => {
     const s = get();
-    const id = `group:${group}`;
-    if (s.tabs.some((t) => t.id === id)) return set({ activeTabId: id });
+    const cid = activeConnId(s);
+    if (!cid) return get().openTab("connection");
+    // group names only identify a group within one cluster, so the tab id carries both
+    const id = `group:${cid}:${group}`;
+    if (s.tabs.some((t) => t.id === id)) return get().activateTab(id);
     set({
-      tabs: [...s.tabs, { id, kind: "group", ...TAB_META.group, title: group }],
-      activeTabId: id,
+      tabs: [...s.tabs, { id, kind: "group", ...TAB_META.group, title: group, connId: cid }],
       groupTabs: { ...s.groupTabs, [id]: { group } },
     });
+    get().activateTab(id);
   },
 
-  closeTab: (id) =>
-    set((s) => {
-      const idx = s.tabs.findIndex((t) => t.id === id);
-      if (idx < 0) return s;
-      const tabs = s.tabs.filter((t) => t.id !== id);
-      const msgTabs = { ...s.msgTabs };
-      delete msgTabs[id];
-      const groupTabs = { ...s.groupTabs };
-      delete groupTabs[id];
-      // renumber from 1 again once the last messages tab closes, instead of counting up forever
-      const msgTabCounter = tabs.some((t) => t.kind === "messages") ? s.msgTabCounter : 0;
-      let activeTabId = s.activeTabId;
-      if (activeTabId === id) {
-        const next = tabs[Math.min(idx, tabs.length - 1)];
-        activeTabId = next?.id ?? "";
-      }
-      if (tabs.length === 0) {
-        return {
-          tabs: [{ id: "welcome", kind: "welcome", ...TAB_META.welcome }],
-          activeTabId: "welcome",
-          msgTabs,
-          groupTabs,
-          msgTabCounter,
-        };
-      }
-      return { tabs, activeTabId, msgTabs, groupTabs, msgTabCounter };
-    }),
+  closeTab: (id) => {
+    const s = get();
+    const idx = s.tabs.findIndex((t) => t.id === id);
+    if (idx < 0) return;
+    let tabs = s.tabs.filter((t) => t.id !== id);
+    const msgTabs = { ...s.msgTabs };
+    delete msgTabs[id];
+    const groupTabs = { ...s.groupTabs };
+    delete groupTabs[id];
+    // renumber from 1 again once the last messages tab closes, instead of counting up forever
+    const msgTabCounter = tabs.some((t) => t.kind === "messages") ? s.msgTabCounter : 0;
+    if (tabs.length === 0) tabs = [{ id: "welcome", kind: "welcome", ...TAB_META.welcome }];
+    set({ tabs, msgTabs, groupTabs, msgTabCounter });
+    // route the successor through activateTab so closing the last tab of a connection
+    // clears that connection's leftover state instead of carrying it into the next tab
+    if (s.activeTabId === id) get().activateTab(tabs[Math.min(idx, tabs.length - 1)].id);
+  },
 
-  activateTab: (id) => set({ activeTabId: id }),
+  /**
+   * The one place the app changes clusters. Anything scoped to a connection (selected
+   * message, active topic, topic recency) is dropped when the incoming tab belongs to a
+   * different one, so nothing from the old cluster leaks into the new view.
+   */
+  activateTab: (id) =>
+    set((s) => {
+      const to = s.tabs.find((t) => t.id === id);
+      if (!to) return s;
+      const from = activeConnId(s);
+      if (!to.connId || to.connId === from) return { activeTabId: id };
+      return {
+        activeTabId: id,
+        lastConnId: to.connId,
+        selectedMsg: null,
+        activeTopic: null,
+        topicRecency: [],
+      };
+    }),
 
   reorderTab: (id, beforeId) =>
     set((s) => {
@@ -348,6 +450,11 @@ export const useApp = create<AppState>((set, get) => ({
   setEditorFont: (font) => {
     localStorage.setItem("kafkamin:editor-font", font);
     set({ editorFont: font });
+  },
+  setEditorFontSize: (size) => {
+    const clamped = clampFontSize(size || DEFAULT_FONT_SIZE);
+    localStorage.setItem("kafkamin:font-size", String(clamped));
+    set({ editorFontSize: clamped });
   },
   toggleLeft: () => set((s) => ({ leftCollapsed: !s.leftCollapsed })),
   toggleRight: () => set((s) => ({ rightCollapsed: !s.rightCollapsed })),

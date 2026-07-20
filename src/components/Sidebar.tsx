@@ -4,7 +4,9 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Badge } from "../ui/Badge";
 import { ToolButton } from "../ui/ToolButton";
 import { ContextMenu, type ContextMenuItem } from "../ui/ContextMenu";
-import { useApp } from "../store";
+import { activeConnId as activeConnIdOf, useApp } from "../store";
+import { connStyle } from "../lib/connColor";
+import { ColorPicker } from "../ui/ColorPicker";
 import { useActiveConnection, useClusterMeta, useGroups } from "../lib/queries";
 import { formatDocCount } from "../lib/format";
 import type { TabKind } from "../lib/types";
@@ -22,6 +24,7 @@ export function Sidebar() {
   const [filter, setFilter] = useState("");
   const [connMenu, setConnMenu] = useState<{ x: number; y: number; id: string } | null>(null);
   const [topicMenu, setTopicMenu] = useState<{ x: number; y: number; topic: string } | null>(null);
+  const [pickingColor, setPickingColor] = useState<string | null>(null);
   const conn = useActiveConnection();
   const meta = useClusterMeta();
   const groups = useGroups();
@@ -33,7 +36,7 @@ export function Sidebar() {
     openMessagesTab, topicRecency,
   } = useApp(
     useShallow((s) => ({
-      connections: s.connections, activeConnId: s.activeConnId, setActiveConn: s.setActiveConn,
+      connections: s.connections, activeConnId: activeConnIdOf(s), setActiveConn: s.setActiveConn,
       deleteConnection: s.deleteConnection, setEditingConn: s.setEditingConn, setConnections: s.setConnections,
       saveConnection: s.saveConnection, openDialog: s.openDialog,
       tabs: s.tabs, activeTabId: s.activeTabId, openTab: s.openTab, activeTopic: s.activeTopic,
@@ -145,6 +148,7 @@ export function Sidebar() {
           },
         },
         { icon: "pencil", label: "Edit connection", kbd: "⌘E", onClick: () => editConn(connMenu.id) },
+        { icon: "status", label: "Set color…", onClick: () => setPickingColor(connMenu.id) },
         { icon: "copy", label: "Duplicate", kbd: "⌘D", onClick: () => duplicateConn(connMenu.id) },
         { icon: "trash", label: "Remove", kbd: "⌘⌫", onClick: () => void removeConn(connMenu.id) },
       ]
@@ -235,7 +239,11 @@ export function Sidebar() {
                 setDropTarget(null);
               }}
             >
-              <Icon name="status" className={c.id === activeConnId ? "soft-green" : undefined} />
+              <span
+                className="conn-dot"
+                style={connStyle(c.color)}
+                title={c.color ? `Color: ${c.color}` : "No color — right-click to set one"}
+              />
               <span>{c.name}</span>
               <Badge tone={c.id === activeConnId ? (meta.isError ? "red" : meta.data ? "green" : "idle") : "idle"}>
                 {c.id === activeConnId ? (meta.isError ? "error" : meta.data ? "up" : "connecting…") : "idle"}
@@ -298,6 +306,16 @@ export function Sidebar() {
       </div>
       {connMenu && (
         <ContextMenu x={connMenu.x} y={connMenu.y} items={connMenuItems} onClose={() => setConnMenu(null)} />
+      )}
+      {pickingColor && (
+        <ColorPicker
+          value={connections.find((c) => c.id === pickingColor)?.color}
+          onPick={(color) => {
+            const c = connections.find((x) => x.id === pickingColor);
+            if (c) saveConnection({ ...c, color: color ?? undefined });
+          }}
+          onClose={() => setPickingColor(null)}
+        />
       )}
       {topicMenu && (
         <ContextMenu

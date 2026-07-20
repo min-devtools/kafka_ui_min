@@ -808,6 +808,11 @@ fn search_impl(
     let mut batch = Vec::with_capacity(100);
     let query = text.trim().to_lowercase();
     let mut scan_error = None;
+    // librdkafka surfaces transient events (broker transport failure during
+    // reconnect, coordinator moves) through poll; it retries internally, so only
+    // persistent failure — many consecutive errors with no successful poll — is fatal.
+    const MAX_CONSECUTIVE_ERRORS: u32 = 20;
+    let mut consecutive_errors = 0u32;
 
     while completed < total_partitions && !cancelled.load(Ordering::Relaxed) {
         // Lazy scan: while the UI has buffered enough matches for the pages it is
@@ -844,6 +849,7 @@ fn search_impl(
         }
         match consumer.poll(Duration::from_millis(200)) {
             Some(Ok(raw)) => {
+                consecutive_errors = 0;
                 let partition = raw.partition();
                 let offset = raw.offset();
                 if let Some(cursor) = cursors.get_mut(&partition) {
@@ -896,6 +902,7 @@ fn search_impl(
                 }
             }
             Some(Err(rdkafka::error::KafkaError::PartitionEOF(partition))) => {
+                consecutive_errors = 0;
                 if let Some(high) = targets.remove(&partition) {
                     if let Some(cursor) = cursors.get_mut(&partition) {
                         scanned += (high - *cursor).max(0);
@@ -905,8 +912,11 @@ fn search_impl(
                 }
             }
             Some(Err(error)) => {
-                scan_error = Some(error.to_string());
-                break;
+                consecutive_errors += 1;
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                    scan_error = Some(error.to_string());
+                    break;
+                }
             }
             None => {}
         }

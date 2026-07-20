@@ -10,13 +10,13 @@ import { FONT_SIZE_STEP } from "../../lib/fontScale";
 export function SettingsView({ active }: { active: boolean }) {
   const {
     theme, setTheme, compact, toggleCompact, vimMode, toggleVim,
-    uiFontSize, setUiFontSize, uiFont, setUiFont, editorFont, setEditorFont, showToast,
+    uiFontSize, setUiFontSize, uiFont, setUiFont, editorFont, setEditorFont, editorFontSize, setEditorFontSize, showToast,
   } = useApp(
     useShallow((s) => ({
       theme: s.theme, setTheme: s.setTheme, compact: s.compact, toggleCompact: s.toggleCompact,
       vimMode: s.vimMode, toggleVim: s.toggleVim, uiFontSize: s.uiFontSize, setUiFontSize: s.setUiFontSize,
       uiFont: s.uiFont, setUiFont: s.setUiFont, editorFont: s.editorFont, setEditorFont: s.setEditorFont,
-      showToast: s.showToast,
+      editorFontSize: s.editorFontSize, setEditorFontSize: s.setEditorFontSize, showToast: s.showToast,
     })),
   );
   const fonts = useSystemFonts();
@@ -57,6 +57,15 @@ export function SettingsView({ active }: { active: boolean }) {
             <span className="settings-icon"><Icon name="braces" size={15} /></span>
             <div className="settings-copy"><strong>Editor font family</strong><span>Applied to message payloads and JSON views.</span></div>
             <div className="settings-control"><select className="settings-select" value={editorFont} style={editorFont ? { fontFamily: `"${editorFont}"` } : undefined} onChange={(event) => setEditorFont(event.target.value)}><option value="">Design default</option>{fontList.map((font) => <option key={font} value={font} style={{ fontFamily: `"${font}"` }}>{font}</option>)}</select></div>
+          </div>
+          <div className="settings-row">
+            <span className="settings-icon"><Icon name="braces" size={15} /></span>
+            <div className="settings-copy"><strong>Editor font size</strong><span>Applies to JSON editors and payload views. Current: {editorFontSize}px.</span></div>
+            <div className="settings-control" style={{ gap: 6 }}>
+              <ToolButton iconOnly title="Decrease editor font" onClick={() => setEditorFontSize(editorFontSize - 1)}>−</ToolButton>
+              <ToolButton onClick={() => setEditorFontSize(0)}>{editorFontSize}px</ToolButton>
+              <ToolButton iconOnly title="Increase editor font" onClick={() => setEditorFontSize(editorFontSize + 1)}>+</ToolButton>
+            </div>
           </div>
           <div className="settings-row">
             <span className="settings-icon"><Icon name="rows" size={15} /></span>

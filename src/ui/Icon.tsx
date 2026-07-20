@@ -40,6 +40,7 @@ import {
   Table2,
   Trash2,
   Users,
+  Wand2,
   X,
   Zap,
   type LucideIcon,
@@ -87,6 +88,7 @@ const ICONS = {
   table: Table2,
   topics: Layers,
   trash: Trash2,
+  wand: Wand2,
   x: X,
   zap: Zap,
 } satisfies Record<string, LucideIcon>;
