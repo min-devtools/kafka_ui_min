@@ -2,6 +2,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useShallow } from "zustand/react/shallow";
 import { useApp } from "../store";
 import { useActiveConnection, useClusterMeta } from "../lib/queries";
+import { UpdateBadge } from "../lib/updateCheck";
 
 export function Statusbar() {
   const conn = useActiveConnection();
@@ -44,6 +45,7 @@ export function Statusbar() {
         <span>UTF-8</span>
         <span>{activeTab?.title ?? ""}</span>
         <span>v{__APP_VERSION__}</span>
+        <UpdateBadge repo="min-devtools/kafka_ui_min" />
         <span
           className="credit"
           style={{ cursor: "pointer" }}
