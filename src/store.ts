@@ -134,8 +134,6 @@ interface AppState {
   uiFont: string;
   /** mono font family for payloads ("" = design default) */
   editorFont: string;
-  /** editor font size in px — applies to JSON editors and payload views */
-  editorFontSize: number;
   leftCollapsed: boolean;
   rightCollapsed: boolean;
   commandOpen: boolean;
@@ -173,7 +171,6 @@ interface AppState {
   setUiFontSize: (size: number) => void;
   setUiFont: (font: string) => void;
   setEditorFont: (font: string) => void;
-  setEditorFontSize: (size: number) => void;
   toggleLeft: () => void;
   toggleRight: () => void;
   setCommandOpen: (open: boolean) => void;
@@ -233,7 +230,6 @@ export const useApp = create<AppState>((set, get) => ({
   uiFontSize: clampFontSize(Number(localStorage.getItem("kafkamin:ui-font-size")) || DEFAULT_FONT_SIZE),
   uiFont: localStorage.getItem("kafkamin:ui-font") ?? "",
   editorFont: localStorage.getItem("kafkamin:editor-font") ?? "",
-  editorFontSize: clampFontSize(Number(localStorage.getItem("kafkamin:font-size")) || DEFAULT_FONT_SIZE),
   leftCollapsed: false,
   rightCollapsed: true,
   commandOpen: false,
@@ -450,11 +446,6 @@ export const useApp = create<AppState>((set, get) => ({
   setEditorFont: (font) => {
     localStorage.setItem("kafkamin:editor-font", font);
     set({ editorFont: font });
-  },
-  setEditorFontSize: (size) => {
-    const clamped = clampFontSize(size || DEFAULT_FONT_SIZE);
-    localStorage.setItem("kafkamin:font-size", String(clamped));
-    set({ editorFontSize: clamped });
   },
   toggleLeft: () => set((s) => ({ leftCollapsed: !s.leftCollapsed })),
   toggleRight: () => set((s) => ({ rightCollapsed: !s.rightCollapsed })),

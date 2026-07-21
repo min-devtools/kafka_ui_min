@@ -2,24 +2,16 @@ import { useState } from "react";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Kv } from "../ui/Kv";
 import { MiniTabs } from "../ui/MiniTabs";
-import { ToolButton } from "../ui/ToolButton";
-import { Icon } from "../ui/Icon";
-import { JsonEditor } from "../ui/JsonEditor";
+import { PayloadPanel } from "./inspector/PayloadPanel";
 import { formatTs } from "../lib/format";
 import { useApp } from "../store";
-
-function prettyPayload(payload: string): string {
-  try {
-    return JSON.stringify(JSON.parse(payload), null, 2);
-  } catch {
-    return payload;
-  }
-}
+import { useTopicConfig } from "../lib/queries";
 
 export function Inspector() {
   const [pane, setPane] = useState("payload");
   const selectedMsg = useApp((s) => s.selectedMsg);
   const showToast = useApp((s) => s.showToast);
+  const topicConfig = useTopicConfig(selectedMsg?.topic ?? null);
 
   return (
     <aside className="inspector">
@@ -47,26 +39,13 @@ export function Inspector() {
             <div className="empty-note">Load messages and click a row — the payload shows here.</div>
           </div>
         ) : (
-          <div className="inspector-edit">
-            <div className="inspector-editor-host">
-              <JsonEditor value={prettyPayload(selectedMsg.payload)} readOnly lineNumbers />
-            </div>
-            <div className="inspector-edit-foot">
-              <span className="seg">
-                <span style={{ color: "var(--text-3)" }}>
-                  {selectedMsg.truncated ? "Payload truncated at 32 KB" : "Read-only"}
-                </span>
-              </span>
-              <ToolButton
-                onClick={async () => {
-                  await writeText(selectedMsg.payload);
-                  showToast("Copied", "Message payload copied to clipboard.");
-                }}
-              >
-                <Icon name="copy" /> Copy payload
-              </ToolButton>
-            </div>
-          </div>
+          <PayloadPanel
+            payload={selectedMsg.payload}
+            onCopy={async (text, label) => {
+              await writeText(text);
+              showToast("Copied", label);
+            }}
+          />
         )
       )}
       {pane === "meta" && (
@@ -84,6 +63,11 @@ export function Inspector() {
                   : "—"}
               </Kv>
               <Kv label="key">{selectedMsg.key ?? "—"}</Kv>
+              <Kv label="compression">
+                {topicConfig.isPending
+                  ? "loading…"
+                  : topicConfig.data?.compression ?? "—"}
+              </Kv>
               {selectedMsg.headers.map(([k, v]) => (
                 <Kv key={k} label={`header · ${k}`}>{v}</Kv>
               ))}

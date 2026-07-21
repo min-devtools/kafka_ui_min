@@ -19,11 +19,11 @@ interface Props {
 export function JsonEditor({ value, onChange, vimStatusRef, fontSize, lineNumbers = true, readOnly = false }: Props) {
   const vimMode = useApp((s) => s.vimMode);
   const editorFont = useApp((s) => s.editorFont);
-  const editorFontSize = useApp((s) => s.editorFontSize);
+  const uiFontSize = useApp((s) => s.uiFontSize);
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
   const vimRef = useRef<{ dispose(): void } | null>(null);
 
-  const size = fontSize ?? editorFontSize;
+  const size = fontSize ?? uiFontSize;
 
   useEffect(() => {
     if (readOnly) return;

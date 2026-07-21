@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
+use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, ResourceSpecifier, TopicReplication};
 use rdkafka::client::DefaultClientContext;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{BaseConsumer, Consumer};
@@ -1483,6 +1483,32 @@ async fn kafka_delete_group(conn: KafkaConnection, group: String) -> Result<(), 
     Ok(())
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TopicConfig {
+    /// Topic-level compression.type config (e.g. "producer", "gzip", "snappy", "lz4", "zstd", "uncompressed").
+    /// rdkafka does not expose per-message batch compression, so this is the closest practical signal.
+    pub compression: String,
+}
+
+#[tauri::command]
+async fn kafka_topic_config(conn: KafkaConnection, topic: String) -> Result<TopicConfig, String> {
+    let admin = make_admin(&conn)?;
+    let opts = AdminOptions::new().operation_timeout(Some(TIMEOUT));
+    let resource = ResourceSpecifier::Topic(&topic);
+    let mut results = admin
+        .describe_configs(std::iter::once(&resource), &opts)
+        .await
+        .map_err(|e| e.to_string())?;
+    let compression = results
+        .pop()
+        .and_then(|r| r.ok())
+        .and_then(|cfg| cfg.get("compression.type").map(|e| e.value.clone()))
+        .flatten()
+        .unwrap_or_else(|| "unknown".to_string());
+    Ok(TopicConfig { compression })
+}
+
 /// Connection passwords live in the OS keychain, not in kafkamin.json.
 const KEYCHAIN_SERVICE: &str = "kafkamin";
 
@@ -1564,6 +1590,7 @@ pub fn run() {
             kafka_create_topic,
             kafka_delete_topic,
             kafka_delete_group,
+            kafka_topic_config,
             secret_set,
             secret_get,
             secret_delete,

@@ -49,6 +49,10 @@ export interface TopicStats {
   highTotal: number;
 }
 
+export interface TopicConfig {
+  compression: string;
+}
+
 export interface GroupInfo {
   name: string;
   state: string;

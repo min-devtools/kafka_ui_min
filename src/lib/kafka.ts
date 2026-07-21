@@ -7,6 +7,7 @@ import type {
   GroupOffset,
   MessageRec,
   PartitionOffsets,
+  TopicConfig,
   TopicStats,
   SearchCondition,
 } from "./types";
@@ -27,6 +28,9 @@ export const fetchTopicOffsets = (conn: Connection, topic: string) =>
 
 export const fetchTopicStats = (conn: Connection) =>
   invoke<TopicStats[]>("kafka_topic_stats", { conn: wire(conn) });
+
+export const fetchTopicConfig = (conn: Connection, topic: string) =>
+  invoke<TopicConfig>("kafka_topic_config", { conn: wire(conn), topic });
 
 export const fetchGroups = (conn: Connection) =>
   invoke<GroupInfo[]>("kafka_groups", { conn: wire(conn) });
