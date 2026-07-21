@@ -63,10 +63,15 @@ export function Inspector() {
                   : "—"}
               </Kv>
               <Kv label="key">{selectedMsg.key ?? "—"}</Kv>
-              <Kv label="compression">
+              {/* topic-level compression.type — rdkafka decompresses before delivery,
+                  so the per-message codec is not observable; "producer" means the
+                  broker keeps whatever codec the producer sent */}
+              <Kv label="compression (topic)">
                 {topicConfig.isPending
                   ? "loading…"
-                  : topicConfig.data?.compression ?? "—"}
+                  : topicConfig.data?.compression === "producer"
+                    ? "producer (as sent by producer)"
+                    : topicConfig.data?.compression ?? "—"}
               </Kv>
               {selectedMsg.headers.map(([k, v]) => (
                 <Kv key={k} label={`header · ${k}`}>{v}</Kv>
