@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { motion, AnimatePresence } from "motion/react";
 import { useShallow } from "zustand/react/shallow";
 import { useApp } from "../store";
 import { connStyle } from "../lib/connColor";
@@ -40,12 +41,18 @@ export function TabsBar() {
 
   return (
     <nav className="tabs">
+      <AnimatePresence initial={false} mode="popLayout">
       {tabs.map((tab) => {
         const conn = tab.connId ? connections.find((c) => c.id === tab.connId) : null;
         return (
-        <button
+        <motion.button
           key={tab.id}
           ref={tab.id === activeTabId ? activeRef : undefined}
+          layout
+          initial={{ opacity: 0, scale: 0.9, y: -4 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.9, y: 4 }}
+          transition={{ type: "spring", stiffness: 500, damping: 35 }}
           type="button"
           draggable={!editingId}
           className={`tab ${tab.id === activeTabId ? "active" : ""} ${dragId === tab.id ? "dragging" : ""} ${overId === tab.id && dragId && dragId !== tab.id ? "drag-over" : ""}`}
@@ -64,7 +71,7 @@ export function TabsBar() {
             e.preventDefault();
             setMenu({ x: e.clientX, y: e.clientY, id: tab.id });
           }}
-          onDragStart={(e) => {
+          onDragStart={(e: any) => {
             setDragId(tab.id);
             e.dataTransfer.effectAllowed = "move";
             e.dataTransfer.setData("application/x-kafkamin-tab", tab.id);
@@ -73,7 +80,7 @@ export function TabsBar() {
             setDragId(null);
             setOverId(null);
           }}
-          onDragOver={(e) => {
+          onDragOver={(e: any) => {
             if (!dragId || dragId === tab.id) return;
             e.preventDefault();
             e.dataTransfer.dropEffect = "move";
@@ -113,7 +120,9 @@ export function TabsBar() {
             // a tab already titled after its owner would just repeat the name
             <span className="tab-conn">{conn.name}</span>
           )}
-          <span
+          <motion.span
+            whileHover={{ scale: 1.15 }}
+            whileTap={{ scale: 0.85 }}
             className="tab-close"
             title={`Close ${tab.title} (⌘W)`}
             aria-label={`Close ${tab.title}`}
@@ -123,12 +132,16 @@ export function TabsBar() {
             }}
           >
             <Icon name="x" size={13} />
-          </span>
-        </button>
+          </motion.span>
+        </motion.button>
         );
       })}
-      <button
+      </AnimatePresence>
+      <motion.button
         type="button"
+        layout
+        whileHover={{ scale: 1.03 }}
+        whileTap={{ scale: 0.96 }}
         className="tab-add"
         title="Open messages for active topic (⌘N)"
         onClick={() => openMessagesTab()}
@@ -146,7 +159,8 @@ export function TabsBar() {
         }}
       >
         <Icon name="plus" /><span>Messages</span>
-      </button>
+      </motion.button>
+      <AnimatePresence>
       {menu && (
         <ContextMenu
           x={menu.x}
@@ -177,6 +191,7 @@ export function TabsBar() {
           ]}
         />
       )}
+      </AnimatePresence>
     </nav>
   );
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Badge } from "../../ui/Badge";
 import { ToolButton } from "../../ui/ToolButton";
@@ -9,6 +9,8 @@ import { useSortedRows } from "../../lib/useSort";
 import { useApp } from "../../store";
 import { useActiveConnection, useGroupMembers, useGroupOffsets, useGroups } from "../../lib/queries";
 import { deleteGroup, resetOffsets } from "../../lib/kafka";
+import { getLagHistory, lagKey, pushLagSample } from "../../lib/lagHistory";
+import { Sparkline } from "../../ui/Sparkline";
 import type { GroupOffset } from "../../lib/types";
 import { DateTimeModal, toLocalStamp } from "../../ui/DateTimeModal";
 
@@ -196,6 +198,16 @@ export function GroupDetailView({ tabId, active }: { tabId: string; active: bool
   const topics = [...new Set((offsets.data ?? []).map((o) => o.topic))];
   const totalLag = (offsets.data ?? []).reduce((sum, o) => sum + o.lag, 0);
 
+  // Every successful offsets poll becomes one lag sample. Pushed during render
+  // (not in an effect) so the chart includes the newest point immediately;
+  // pushLagSample dedupes by fetch timestamp, which makes the re-run harmless.
+  const history = useMemo(() => {
+    if (!conn || !group) return [];
+    if (offsets.data) pushLagSample(lagKey(conn.id, group), offsets.data, offsets.dataUpdatedAt);
+    return [...getLagHistory(lagKey(conn.id, group))];
+  }, [conn, group, offsets.data, offsets.dataUpdatedAt]);
+  const spanMin = history.length >= 2 ? Math.max(1, Math.round((history[history.length - 1].t - history[0].t) / 60_000)) : 0;
+
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ["groups"] });
     void queryClient.invalidateQueries({ queryKey: ["group-members"] });
@@ -270,6 +282,24 @@ export function GroupDetailView({ tabId, active }: { tabId: string; active: bool
             </div>
 
             <div className="panel">
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <h3 style={{ margin: 0 }}>Lag trend</h3>
+                <span style={{ color: "var(--text-3)", fontSize: "0.8462rem" }}>
+                  {history.length >= 2 ? `last ${spanMin} min · ${history.length} samples` : "sampling every sync…"}
+                </span>
+                <span style={{ flex: 1 }} />
+                <Badge tone={totalLag > 0 ? "yellow" : "green"}>now {totalLag}</Badge>
+              </div>
+              <div style={{ marginTop: 8 }}>
+                <Sparkline
+                  points={history.map((s) => s.total)}
+                  height={56}
+                  color={totalLag > 0 ? "var(--orange)" : "var(--green)"}
+                />
+              </div>
+            </div>
+
+            <div className="panel">
               <h3>Members</h3>
               {members.isLoading && <div className="empty-note">Loading group members…</div>}
               {members.isError && <div className="empty-note">Unable to load group members.</div>}
@@ -316,6 +346,14 @@ export function GroupDetailView({ tabId, active }: { tabId: string; active: bool
                     <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0" }}>
                       <strong>{topic}</strong>
                       <Badge tone={lag > 0 ? "yellow" : "green"}>lag {lag}</Badge>
+                      {history.length >= 2 && (
+                        <Sparkline
+                          points={history.map((s) => s.byTopic[topic] ?? 0)}
+                          height={20}
+                          color={lag > 0 ? "var(--orange)" : "var(--green)"}
+                          style={{ width: 120 }}
+                        />
+                      )}
                       <span style={{ flex: 1 }} />
                       <ToolButton disabled={busy} title="Reset offsets for this topic" onClick={() => setResetTarget({ topic, partition: null })}>
                         <Icon name="history" /> Reset offsets…

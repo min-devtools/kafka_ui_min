@@ -1056,3 +1056,22 @@ body.light .docs-preview-editor { color: var(--editor-fg); }
   word-break: break-all;
 }
 
+/* motion (JS) owns the palette open/close in this app — the design-system CSS
+   keyframes would run on top of it and fight the spring (visible end-hitch) */
+.command, .palette, .toast, .prompt-dialog { animation: none; }
+
+/* mini-tabs: the active background is a motion pill that glides between tabs,
+   so the static active styles from the design system go transparent here */
+.mini-tabs button { position: relative; }
+.mini-tabs button.active { background: transparent; border-color: transparent; }
+.mini-tabs button > svg,
+.mini-tabs .mini-tab-label { position: relative; z-index: 1; }
+.mini-tab-pill {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: 7px;
+  background: var(--pane-2);
+  border: 1px solid var(--line);
+}
+

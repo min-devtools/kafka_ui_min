@@ -35,6 +35,39 @@ export interface ClusterMeta {
   topics: TopicInfo[];
 }
 
+export interface PartitionDetail {
+  id: number;
+  /** broker id, or -1 when the partition has no leader (offline) */
+  leader: number;
+  replicas: number[];
+  isr: number[];
+}
+
+export interface TopicPartitionsDetail {
+  name: string;
+  internal: boolean;
+  partitions: PartitionDetail[];
+}
+
+export interface BrokerLoad {
+  id: number;
+  host: string;
+  port: number;
+  /** partitions this broker leads */
+  leaders: number;
+  /** partition replicas hosted here, leaders included */
+  replicas: number;
+}
+
+export interface ClusterHealth {
+  brokers: BrokerLoad[];
+  /** broker that answered the metadata request — the one this app is talking to */
+  origBrokerId: number;
+  underReplicated: number;
+  offline: number;
+  topics: TopicPartitionsDetail[];
+}
+
 export interface PartitionOffsets {
   partition: number;
   low: number;
@@ -49,8 +82,14 @@ export interface TopicStats {
   highTotal: number;
 }
 
-export interface TopicConfig {
-  compression: string;
+export interface ConfigEntry {
+  name: string;
+  value: string | null;
+  /** "default" | "dynamic-topic" | "dynamic-broker" | "dynamic-default-broker" | "static-broker" | "unknown" */
+  source: string;
+  isDefault: boolean;
+  isReadOnly: boolean;
+  isSensitive: boolean;
 }
 
 export interface GroupInfo {

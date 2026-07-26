@@ -3,7 +3,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, ResourceSpecifier, TopicReplication};
+use rdkafka::admin::{
+    AdminClient, AdminOptions, AlterConfig, ConfigSource, NewPartitions, NewTopic,
+    ResourceSpecifier, TopicReplication,
+};
 use rdkafka::client::DefaultClientContext;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{BaseConsumer, Consumer};
@@ -207,6 +210,118 @@ async fn kafka_metadata(
 ) -> Result<ClusterMeta, String> {
     let consumer = inspect_consumer(&cache, &conn)?;
     tauri::async_runtime::spawn_blocking(move || metadata_impl(&consumer))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PartitionDetail {
+    pub id: i32,
+    /// broker id, or -1 when the partition has no leader (offline)
+    pub leader: i32,
+    pub replicas: Vec<i32>,
+    pub isr: Vec<i32>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TopicPartitionsDetail {
+    pub name: String,
+    pub internal: bool,
+    pub partitions: Vec<PartitionDetail>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrokerLoad {
+    pub id: i32,
+    pub host: String,
+    pub port: i32,
+    /// partitions this broker leads
+    pub leaders: i32,
+    /// partition replicas hosted here, leaders included
+    pub replicas: i32,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterHealth {
+    pub brokers: Vec<BrokerLoad>,
+    /// broker that answered the metadata request — the one this app is talking to
+    pub orig_broker_id: i32,
+    pub under_replicated: i32,
+    pub offline: i32,
+    pub topics: Vec<TopicPartitionsDetail>,
+}
+
+fn cluster_health_impl(consumer: &BaseConsumer) -> Result<ClusterHealth, String> {
+    let md = consumer
+        .fetch_metadata(None, TIMEOUT)
+        .map_err(|e| e.to_string())?;
+    let mut leader_count: HashMap<i32, i32> = HashMap::new();
+    let mut replica_count: HashMap<i32, i32> = HashMap::new();
+    let mut under_replicated = 0;
+    let mut offline = 0;
+    let mut topics = Vec::new();
+    for t in md.topics() {
+        let mut partitions = Vec::with_capacity(t.partitions().len());
+        for p in t.partitions() {
+            let replicas = p.replicas().to_vec();
+            let isr = p.isr().to_vec();
+            if p.leader() < 0 {
+                offline += 1;
+            } else {
+                *leader_count.entry(p.leader()).or_default() += 1;
+            }
+            if isr.len() < replicas.len() {
+                under_replicated += 1;
+            }
+            for r in &replicas {
+                *replica_count.entry(*r).or_default() += 1;
+            }
+            partitions.push(PartitionDetail {
+                id: p.id(),
+                leader: p.leader(),
+                replicas,
+                isr,
+            });
+        }
+        partitions.sort_by_key(|p| p.id);
+        topics.push(TopicPartitionsDetail {
+            name: t.name().to_string(),
+            internal: t.name().starts_with("__"),
+            partitions,
+        });
+    }
+    topics.sort_by(|a, b| a.name.cmp(&b.name));
+    let brokers = md
+        .brokers()
+        .iter()
+        .map(|b| BrokerLoad {
+            id: b.id(),
+            host: b.host().to_string(),
+            port: b.port(),
+            leaders: leader_count.get(&b.id()).copied().unwrap_or(0),
+            replicas: replica_count.get(&b.id()).copied().unwrap_or(0),
+        })
+        .collect();
+    Ok(ClusterHealth {
+        brokers,
+        orig_broker_id: md.orig_broker_id(),
+        under_replicated,
+        offline,
+        topics,
+    })
+}
+
+#[tauri::command]
+async fn kafka_cluster_health(
+    cache: State<'_, ConsumerCache>,
+    conn: KafkaConnection,
+) -> Result<ClusterHealth, String> {
+    let consumer = inspect_consumer(&cache, &conn)?;
+    tauri::async_runtime::spawn_blocking(move || cluster_health_impl(&consumer))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -1485,28 +1600,182 @@ async fn kafka_delete_group(conn: KafkaConnection, group: String) -> Result<(), 
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TopicConfig {
-    /// Topic-level compression.type config (e.g. "producer", "gzip", "snappy", "lz4", "zstd", "uncompressed").
-    /// rdkafka does not expose per-message batch compression, so this is the closest practical signal.
-    pub compression: String,
+pub struct ConfigEntryOut {
+    pub name: String,
+    pub value: Option<String>,
+    /// "default" | "dynamic-topic" | "dynamic-broker" | "dynamic-default-broker" | "static-broker" | "unknown"
+    pub source: String,
+    pub is_default: bool,
+    pub is_read_only: bool,
+    pub is_sensitive: bool,
+}
+
+fn config_source_label(source: &ConfigSource) -> &'static str {
+    match source {
+        ConfigSource::Default => "default",
+        ConfigSource::DynamicTopic => "dynamic-topic",
+        ConfigSource::DynamicBroker => "dynamic-broker",
+        ConfigSource::DynamicDefaultBroker => "dynamic-default-broker",
+        ConfigSource::StaticBroker => "static-broker",
+        ConfigSource::Unknown => "unknown",
+    }
+}
+
+async fn describe_resource_config(
+    admin: &AdminClient<DefaultClientContext>,
+    resource: ResourceSpecifier<'_>,
+) -> Result<Vec<ConfigEntryOut>, String> {
+    let opts = AdminOptions::new().request_timeout(Some(TIMEOUT));
+    let mut results = admin
+        .describe_configs(std::iter::once(&resource), &opts)
+        .await
+        .map_err(|e| e.to_string())?;
+    let cfg = results
+        .pop()
+        .ok_or_else(|| "empty describe-configs response".to_string())?
+        .map_err(|e| e.to_string())?;
+    let mut entries: Vec<ConfigEntryOut> = cfg
+        .entries
+        .into_iter()
+        .map(|e| ConfigEntryOut {
+            name: e.name,
+            value: e.value,
+            source: config_source_label(&e.source).to_string(),
+            is_default: e.is_default,
+            is_read_only: e.is_read_only,
+            is_sensitive: e.is_sensitive,
+        })
+        .collect();
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(entries)
 }
 
 #[tauri::command]
-async fn kafka_topic_config(conn: KafkaConnection, topic: String) -> Result<TopicConfig, String> {
+async fn kafka_topic_config(
+    conn: KafkaConnection,
+    topic: String,
+) -> Result<Vec<ConfigEntryOut>, String> {
     let admin = make_admin(&conn)?;
-    let opts = AdminOptions::new().operation_timeout(Some(TIMEOUT));
+    describe_resource_config(&admin, ResourceSpecifier::Topic(&topic)).await
+}
+
+#[tauri::command]
+async fn kafka_broker_config(
+    conn: KafkaConnection,
+    broker: i32,
+) -> Result<Vec<ConfigEntryOut>, String> {
+    let admin = make_admin(&conn)?;
+    describe_resource_config(&admin, ResourceSpecifier::Broker(broker)).await
+}
+
+#[tauri::command]
+async fn kafka_alter_topic_config(
+    conn: KafkaConnection,
+    topic: String,
+    set: HashMap<String, String>,
+    remove: Vec<String>,
+) -> Result<(), String> {
+    let admin = make_admin(&conn)?;
+    let opts = AdminOptions::new().request_timeout(Some(TIMEOUT));
+    // Legacy AlterConfigs replaces the whole override set, so every current
+    // dynamic override must be resent or the broker silently resets it.
     let resource = ResourceSpecifier::Topic(&topic);
     let mut results = admin
         .describe_configs(std::iter::once(&resource), &opts)
         .await
         .map_err(|e| e.to_string())?;
-    let compression = results
+    let cfg = results
         .pop()
-        .and_then(|r| r.ok())
-        .and_then(|cfg| cfg.get("compression.type").map(|e| e.value.clone()))
-        .flatten()
-        .unwrap_or_else(|| "unknown".to_string());
-    Ok(TopicConfig { compression })
+        .ok_or_else(|| "empty describe-configs response".to_string())?
+        .map_err(|e| e.to_string())?;
+    let mut overrides: HashMap<String, String> = cfg
+        .entries
+        .iter()
+        .filter(|e| e.source == ConfigSource::DynamicTopic)
+        .filter_map(|e| e.value.as_ref().map(|v| (e.name.clone(), v.clone())))
+        .collect();
+    for name in &remove {
+        overrides.remove(name);
+    }
+    for (name, value) in &set {
+        overrides.insert(name.clone(), value.clone());
+    }
+    let alter = AlterConfig {
+        specifier: ResourceSpecifier::Topic(&topic),
+        entries: overrides
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect(),
+    };
+    let results = admin
+        .alter_configs(std::iter::once(&alter), &opts)
+        .await
+        .map_err(|e| e.to_string())?;
+    for r in results {
+        r.map_err(|(spec, e)| format!("{spec:?}: {e}"))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn kafka_add_partitions(
+    conn: KafkaConnection,
+    topic: String,
+    total: i32,
+) -> Result<(), String> {
+    let admin = make_admin(&conn)?;
+    let opts = AdminOptions::new().operation_timeout(Some(TIMEOUT));
+    let new_partitions = NewPartitions::new(&topic, total.max(1) as usize);
+    let results = admin
+        .create_partitions(&[new_partitions], &opts)
+        .await
+        .map_err(|e| e.to_string())?;
+    for r in results {
+        r.map_err(|(t, e)| format!("{t}: {e}"))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn kafka_purge_topic(
+    cache: State<'_, ConsumerCache>,
+    conn: KafkaConnection,
+    topic: String,
+) -> Result<(), String> {
+    let consumer = inspect_consumer(&cache, &conn)?;
+    let partitions = {
+        let topic = topic.clone();
+        tauri::async_runtime::spawn_blocking(move || -> Result<Vec<i32>, String> {
+            let md = consumer
+                .fetch_metadata(Some(&topic), TIMEOUT)
+                .map_err(|e| e.to_string())?;
+            let t = md
+                .topics()
+                .first()
+                .ok_or_else(|| format!("topic not found: {topic}"))?;
+            Ok(t.partitions().iter().map(|p| p.id()).collect())
+        })
+        .await
+        .map_err(|e| e.to_string())??
+    };
+    // Offset::End truncates each partition at its high watermark — every retained
+    // message goes away, the topic and its config stay.
+    let mut tpl = TopicPartitionList::new();
+    for p in partitions {
+        tpl.add_partition_offset(&topic, p, Offset::End)
+            .map_err(|e| e.to_string())?;
+    }
+    let admin = make_admin(&conn)?;
+    let opts = AdminOptions::new().operation_timeout(Some(TIMEOUT));
+    let result = admin
+        .delete_records(&tpl, &opts)
+        .await
+        .map_err(|e| e.to_string())?;
+    for el in result.elements() {
+        el.error()
+            .map_err(|e| format!("partition {}: {}", el.partition(), e))?;
+    }
+    Ok(())
 }
 
 /// Connection passwords live in the OS keychain, not in kafkamin.json.
@@ -1544,6 +1813,7 @@ fn secret_delete(id: String) -> Result<(), String> {
 }
 
 /// List installed font family names (macOS: NSFontManager via JXA — no extra crates).
+#[cfg(target_os = "macos")]
 #[tauri::command]
 async fn list_fonts() -> Result<Vec<String>, String> {
     let out = std::process::Command::new("osascript")
@@ -1565,6 +1835,61 @@ async fn list_fonts() -> Result<Vec<String>, String> {
     Ok(fonts)
 }
 
+/// CREATE_NO_WINDOW — a GUI process that spawns a console child flashes a black
+/// console window without it.
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// One family name per line. PowerShell ends lines with CRLF and repeats a family
+/// once per registered style, so trimming and dedup are both load-bearing.
+#[cfg(target_os = "windows")]
+fn font_families(stdout: &str) -> Vec<String> {
+    let mut fonts: Vec<String> = stdout
+        .lines()
+        .map(|line| line.trim().to_owned())
+        .filter(|line| !line.is_empty())
+        .collect();
+    fonts.sort();
+    fonts.dedup();
+    fonts
+}
+
+/// List installed font family names (Windows: System.Drawing's
+/// InstalledFontCollection — no extra crates). `powershell.exe`, not `pwsh`:
+/// System.Drawing is not guaranteed to be present on .NET Core.
+#[cfg(target_os = "windows")]
+#[tauri::command]
+async fn list_fonts() -> Result<Vec<String>, String> {
+    use std::os::windows::process::CommandExt;
+    let out = std::process::Command::new("powershell.exe")
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-Command",
+            // the OutputEncoding switch keeps non-ASCII family names ("宋体",
+            // "MS ゴシック") from arriving as OEM-codepage mojibake
+            "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; \
+             Add-Type -AssemblyName System.Drawing; \
+             (New-Object System.Drawing.Text.InstalledFontCollection).Families \
+             | ForEach-Object { $_.Name }",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_owned());
+    }
+    Ok(font_families(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// Nothing to enumerate without a platform API — the picker falls back to the
+/// families the webview already knows.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[tauri::command]
+async fn list_fonts() -> Result<Vec<String>, String> {
+    Ok(Vec::new())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1576,6 +1901,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             kafka_metadata,
+            kafka_cluster_health,
             kafka_topic_offsets,
             kafka_topic_stats,
             kafka_groups,
@@ -1591,6 +1917,10 @@ pub fn run() {
             kafka_delete_topic,
             kafka_delete_group,
             kafka_topic_config,
+            kafka_broker_config,
+            kafka_alter_topic_config,
+            kafka_add_partitions,
+            kafka_purge_topic,
             secret_set,
             secret_get,
             secret_delete,
@@ -1644,6 +1974,10 @@ pub fn run() {
                 let menu = Menu::with_items(handle, &[&app_menu, &edit, &window])?;
                 app.set_menu(menu)?;
             }
+            // off macOS the window keeps its native decorations and there is no
+            // app-level menu bar to replace, so nothing here consumes `app`
+            #[cfg(not(target_os = "macos"))]
+            let _ = app;
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -1758,6 +2092,14 @@ mod tests {
         push_candidate(&mut batch, &mut emitted, message("two"));
         assert_eq!(emitted, 10_000);
         assert_eq!(batch.len(), 1);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn font_families_strips_crlf_and_duplicate_styles() {
+        // raw shape of powershell.exe stdout: CRLF endings, one entry per style
+        let names = font_families("Segoe UI\r\nSegoe UI\r\nConsolas\r\n\r\n");
+        assert_eq!(names, vec!["Consolas", "Segoe UI"]);
     }
 
     #[test]

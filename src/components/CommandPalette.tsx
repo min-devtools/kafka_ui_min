@@ -1,8 +1,11 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { motion, AnimatePresence } from "motion/react";
 import { useShallow } from "zustand/react/shallow";
 import { useApp } from "../store";
 import { useClusterMeta, useGroups } from "../lib/queries";
 import { Icon, type IconName } from "../ui/Icon";
+import { ToolButton } from "../ui/ToolButton";
+import { THEMES } from "../lib/themes";
 import { fuzzyMatch, highlight } from "../lib/fuzzy";
 
 interface Command {
@@ -36,6 +39,7 @@ export function CommandPalette() {
   const [input, setInput] = useState("");
   const [cursor, setCursor] = useState(0);
   const [recents, setRecents] = useState<string[]>([]);
+  const [themePicker, setThemePicker] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const meta = useClusterMeta();
   const groups = useGroups();
@@ -45,6 +49,7 @@ export function CommandPalette() {
       openMessagesTab: s.openMessagesTab, openGroupTab: s.openGroupTab, setEditingConn: s.setEditingConn, toggleLeft: s.toggleLeft,
       toggleRight: s.toggleRight, toggleTheme: s.toggleTheme, toggleCompact: s.toggleCompact,
       setActiveConn: s.setActiveConn, setActiveTopic: s.setActiveTopic, setCommandOpen: s.setCommandOpen, vimMode: s.vimMode,
+      theme: s.theme, setTheme: s.setTheme,
     })),
   );
 
@@ -69,6 +74,7 @@ export function CommandPalette() {
       { icon: "panel-right", label: "Toggle right inspector", kbd: "⌘R", action: () => app.toggleRight() },
       { icon: "settings", label: "Open Settings", kbd: "⌘,", action: () => app.openTab("settings") },
       { icon: "moon", label: "Toggle theme", action: () => app.toggleTheme() },
+      { icon: "settings", label: "Theme picker", action: () => setThemePicker(true) },
       { icon: "rows", label: "Toggle compact density", action: () => app.toggleCompact() },
     ];
     for (const c of app.connections) {
@@ -125,8 +131,6 @@ export function CommandPalette() {
     return out.slice(0, 12);
   }, [commands, input, recents]);
 
-  if (!app.commandOpen) return null;
-
   const runCommand = (cmd: Command) => {
     app.setCommandOpen(false);
     pushRecent(cmd.label);
@@ -134,13 +138,28 @@ export function CommandPalette() {
   };
 
   return (
-    <div
+    <>
+    <AnimatePresence>
+      {app.commandOpen && (
+    <motion.div
+      key="command-palette-backdrop"
       className="command"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.16, ease: [0.32, 0.72, 0, 1] }}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) app.setCommandOpen(false);
       }}
     >
-      <div className="palette">
+      <motion.div
+        key="command-palette-modal"
+        className="palette"
+        initial={{ opacity: 0, y: -12, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: -12, scale: 0.98 }}
+        transition={{ type: "spring", stiffness: 450, damping: 32 }}
+      >
         <input
           ref={inputRef}
           value={input}
@@ -181,7 +200,43 @@ export function CommandPalette() {
           ))}
           {filtered.length === 0 && <div className="empty-note">No matching commands.</div>}
         </div>
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
+      )}
+    </AnimatePresence>
+    <AnimatePresence>
+      {themePicker && (
+        <motion.div
+          key="theme-picker-backdrop"
+          className="modal"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.18, ease: [0.32, 0.72, 0, 1] }}
+          onMouseDown={(e) => { if (e.target === e.currentTarget) setThemePicker(false); }}
+        >
+          <motion.div
+            key="theme-picker-content"
+            className="prompt-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Theme picker"
+            initial={{ opacity: 0, scale: 0.95, y: 8 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 8 }}
+            transition={{ type: "spring", stiffness: 420, damping: 30 }}
+          >
+            <strong>Theme picker</strong>
+            <p className="prompt-dialog-msg">Changes apply immediately and are saved for this device.</p>
+            <select className="side-search" style={{ width: "100%" }} value={app.theme} autoFocus onChange={(event) => app.setTheme(event.target.value)}>
+              <optgroup label="Dark">{THEMES.filter((item) => item.base === "dark").map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</optgroup>
+              <optgroup label="Light">{THEMES.filter((item) => item.base === "light").map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</optgroup>
+            </select>
+            <div className="prompt-dialog-foot"><ToolButton variant="primary" onClick={() => setThemePicker(false)}>Done</ToolButton></div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+    </>
   );
 }
