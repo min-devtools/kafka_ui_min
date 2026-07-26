@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import type { Connection } from "./types";
-import { fetchGroupMembers, fetchGroupOffsets, fetchGroups, fetchMetadata, fetchTopicConfig, fetchTopicOffsets, fetchTopicStats } from "./kafka";
+import { fetchBrokerConfig, fetchClusterHealth, fetchGroupMembers, fetchGroupOffsets, fetchGroups, fetchMetadata, fetchTopicConfig, fetchTopicOffsets, fetchTopicStats } from "./kafka";
 import { activeConnection, useApp } from "../store";
 
 /** One cluster sync every 10s is plenty — applies to all background polling. */
@@ -19,6 +19,28 @@ export function useClusterMeta() {
     enabled: !!conn,
     refetchInterval: SYNC_INTERVAL,
     staleTime: SYNC_INTERVAL,
+  });
+}
+
+export function useClusterHealth() {
+  const conn = useActiveConnection();
+  return useQuery({
+    queryKey: ["cluster-health", conn?.id],
+    queryFn: () => fetchClusterHealth(conn!),
+    enabled: !!conn,
+    refetchInterval: SYNC_INTERVAL,
+    staleTime: SYNC_INTERVAL,
+  });
+}
+
+export function useBrokerConfig(broker: number | null) {
+  const conn = useActiveConnection();
+  return useQuery({
+    queryKey: ["broker-config", conn?.id, broker],
+    queryFn: () => fetchBrokerConfig(conn!, broker!),
+    enabled: !!conn && broker != null,
+    // broker configs rarely move — refetch on demand, not on a timer
+    staleTime: 60_000,
   });
 }
 

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { AnimatePresence } from "motion/react";
 import { useShallow } from "zustand/react/shallow";
 import { useQueryClient } from "@tanstack/react-query";
 import { Badge } from "../ui/Badge";
@@ -304,9 +305,11 @@ export function Sidebar() {
           </div>
         )}
       </div>
-      {connMenu && (
-        <ContextMenu x={connMenu.x} y={connMenu.y} items={connMenuItems} onClose={() => setConnMenu(null)} />
-      )}
+      <AnimatePresence>
+        {connMenu && (
+          <ContextMenu x={connMenu.x} y={connMenu.y} items={connMenuItems} onClose={() => setConnMenu(null)} />
+        )}
+      </AnimatePresence>
       {pickingColor && (
         <ColorPicker
           value={connections.find((c) => c.id === pickingColor)?.color}
@@ -317,19 +320,21 @@ export function Sidebar() {
           onClose={() => setPickingColor(null)}
         />
       )}
-      {topicMenu && (
-        <ContextMenu
-          x={topicMenu.x}
-          y={topicMenu.y}
-          onClose={() => setTopicMenu(null)}
-          items={[
-            { icon: "docs", label: "View messages", strong: true, onClick: () => openMessagesTab(topicMenu.topic) },
-            { icon: "send", label: "Produce to topic", onClick: () => openTab("produce") },
-            { icon: "topics", label: "Open All Topics", onClick: () => openTab("topics") },
-            { icon: "groups", label: "Consumer groups", onClick: () => openTab("groups") },
-          ]}
-        />
-      )}
+      <AnimatePresence>
+        {topicMenu && (
+          <ContextMenu
+            x={topicMenu.x}
+            y={topicMenu.y}
+            onClose={() => setTopicMenu(null)}
+            items={[
+              { icon: "docs", label: "View messages", strong: true, onClick: () => openMessagesTab(topicMenu.topic) },
+              { icon: "send", label: "Produce to topic", onClick: () => openTab("produce") },
+              { icon: "topics", label: "Open All Topics", onClick: () => openTab("topics") },
+              { icon: "groups", label: "Consumer groups", onClick: () => openTab("groups") },
+            ]}
+          />
+        )}
+      </AnimatePresence>
     </aside>
   );
 }

@@ -1,13 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  ClusterHealth,
   ClusterMeta,
+  ConfigEntry,
   Connection,
   GroupInfo,
   GroupMember,
   GroupOffset,
   MessageRec,
   PartitionOffsets,
-  TopicConfig,
   TopicStats,
   SearchCondition,
 } from "./types";
@@ -23,6 +24,12 @@ const wire = (conn: Connection) => ({
 export const fetchMetadata = (conn: Connection) =>
   invoke<ClusterMeta>("kafka_metadata", { conn: wire(conn) });
 
+export const fetchClusterHealth = (conn: Connection) =>
+  invoke<ClusterHealth>("kafka_cluster_health", { conn: wire(conn) });
+
+export const fetchBrokerConfig = (conn: Connection, broker: number) =>
+  invoke<ConfigEntry[]>("kafka_broker_config", { conn: wire(conn), broker });
+
 export const fetchTopicOffsets = (conn: Connection, topic: string) =>
   invoke<PartitionOffsets[]>("kafka_topic_offsets", { conn: wire(conn), topic });
 
@@ -30,7 +37,23 @@ export const fetchTopicStats = (conn: Connection) =>
   invoke<TopicStats[]>("kafka_topic_stats", { conn: wire(conn) });
 
 export const fetchTopicConfig = (conn: Connection, topic: string) =>
-  invoke<TopicConfig>("kafka_topic_config", { conn: wire(conn), topic });
+  invoke<ConfigEntry[]>("kafka_topic_config", { conn: wire(conn), topic });
+
+/** Set and/or clear topic config overrides. Clearing returns the setting to the broker default. */
+export const alterTopicConfig = (
+  conn: Connection,
+  topic: string,
+  set: Record<string, string>,
+  remove: string[],
+) => invoke<void>("kafka_alter_topic_config", { conn: wire(conn), topic, set, remove });
+
+/** Grow a topic to `total` partitions — Kafka can only add, never remove. */
+export const addPartitions = (conn: Connection, topic: string, total: number) =>
+  invoke<void>("kafka_add_partitions", { conn: wire(conn), topic, total });
+
+/** Delete every retained message in all partitions (truncate to high watermark). */
+export const purgeTopic = (conn: Connection, topic: string) =>
+  invoke<void>("kafka_purge_topic", { conn: wire(conn), topic });
 
 export const fetchGroups = (conn: Connection) =>
   invoke<GroupInfo[]>("kafka_groups", { conn: wire(conn) });

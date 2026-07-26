@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { AnimatePresence } from "motion/react";
 import { useShallow } from "zustand/react/shallow";
 import { useQueryClient } from "@tanstack/react-query";
 import { Badge } from "../../ui/Badge";
@@ -10,7 +11,8 @@ import { useSortedRows } from "../../lib/useSort";
 import { ContextMenu } from "../../ui/ContextMenu";
 import { useApp } from "../../store";
 import { useActiveConnection, useClusterMeta, useTopicStats } from "../../lib/queries";
-import { createTopic, deleteTopic } from "../../lib/kafka";
+import { createTopic, deleteTopic, purgeTopic } from "../../lib/kafka";
+import { TopicSettingsModal } from "../TopicSettingsModal";
 import { formatDocCount } from "../../lib/format";
 import type { TopicInfo } from "../../lib/types";
 
@@ -23,6 +25,7 @@ export function TopicsView({ active }: { active: boolean }) {
   const [draft, setDraft] = useState({ name: "", partitions: 1, replication: 1 });
   const [busy, setBusy] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number; topic: string } | null>(null);
+  const [settingsTopic, setSettingsTopic] = useState<string | null>(null);
   const conn = useActiveConnection();
   const meta = useClusterMeta();
   const stats = useTopicStats();
@@ -59,6 +62,29 @@ export function TopicsView({ active }: { active: boolean }) {
       void queryClient.invalidateQueries({ queryKey: ["cluster-meta"] });
     } catch (err) {
       showToast("Create failed", String(err), "err");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const purgeMessages = async (name: string) => {
+    if (!conn) return;
+    const ok = await openDialog({
+      kind: "confirm",
+      title: `Purge topic "${name}"`,
+      message: "Every retained message in all partitions is deleted (truncated to the high watermark). The topic and its config stay.",
+      confirmLabel: "Purge messages",
+      danger: true,
+    });
+    if (!ok) return;
+    setBusy(true);
+    try {
+      await purgeTopic(conn, name);
+      showToast("Topic purged", `${name}: all messages deleted.`);
+      void queryClient.invalidateQueries({ queryKey: ["topic-stats"] });
+      void queryClient.invalidateQueries({ queryKey: ["topic-offsets"] });
+    } catch (err) {
+      showToast("Purge failed", String(err), "err");
     } finally {
       setBusy(false);
     }
@@ -185,18 +211,23 @@ export function TopicsView({ active }: { active: boolean }) {
           </table>
         )}
       </div>
-      {menu && (
-        <ContextMenu
-          x={menu.x}
-          y={menu.y}
-          onClose={() => setMenu(null)}
-          items={[
-            { icon: "docs", label: "View messages", strong: true, onClick: () => openMessagesTab(menu.topic) },
-            { icon: "send", label: "Produce to topic", onClick: () => openTab("produce") },
-            { icon: "trash", label: "Delete topic", onClick: () => void removeTopic(menu.topic) },
-          ]}
-        />
-      )}
+      <AnimatePresence>
+        {menu && (
+          <ContextMenu
+            x={menu.x}
+            y={menu.y}
+            onClose={() => setMenu(null)}
+            items={[
+              { icon: "docs", label: "View messages", strong: true, onClick: () => openMessagesTab(menu.topic) },
+              { icon: "send", label: "Produce to topic", onClick: () => openTab("produce") },
+              { icon: "settings", label: "Topic settings…", onClick: () => setSettingsTopic(menu.topic) },
+              { icon: "zap", label: "Purge messages…", onClick: () => void purgeMessages(menu.topic) },
+              { icon: "trash", label: "Delete topic", onClick: () => void removeTopic(menu.topic) },
+            ]}
+          />
+        )}
+      </AnimatePresence>
+      {settingsTopic && <TopicSettingsModal topic={settingsTopic} onClose={() => setSettingsTopic(null)} />}
     </section>
   );
 }

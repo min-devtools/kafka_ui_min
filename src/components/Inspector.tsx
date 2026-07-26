@@ -12,6 +12,7 @@ export function Inspector() {
   const selectedMsg = useApp((s) => s.selectedMsg);
   const showToast = useApp((s) => s.showToast);
   const topicConfig = useTopicConfig(selectedMsg?.topic ?? null);
+  const compression = topicConfig.data?.find((e) => e.name === "compression.type")?.value ?? null;
 
   return (
     <aside className="inspector">
@@ -69,9 +70,9 @@ export function Inspector() {
               <Kv label="compression (topic)">
                 {topicConfig.isPending
                   ? "loading…"
-                  : topicConfig.data?.compression === "producer"
+                  : compression === "producer"
                     ? "producer (as sent by producer)"
-                    : topicConfig.data?.compression ?? "—"}
+                    : compression ?? "—"}
               </Kv>
               {selectedMsg.headers.map(([k, v]) => (
                 <Kv key={k} label={`header · ${k}`}>{v}</Kv>
