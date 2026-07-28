@@ -87,6 +87,16 @@ export const consumeMessages = (
     timestampMs: opts.timestampMs ?? null,
   });
 
+export const startLiveMessages = (
+  conn: Connection,
+  liveId: string,
+  topic: string,
+  partition: number | null,
+) => invoke<void>("kafka_live_start", { conn: wire(conn), liveId, topic, partition });
+
+export const stopLiveMessages = (liveId: string) =>
+  invoke<void>("kafka_live_stop", { liveId });
+
 export const startFullTopicSearch = (
   conn: Connection,
   searchId: string,

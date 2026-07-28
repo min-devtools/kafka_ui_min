@@ -13,6 +13,10 @@ export type FilterFn = (
   headers: Record<string, string>,
 ) => unknown;
 
+/** Vim consumes Escape until it is back in Normal; only then may the modal close. */
+export const shouldCloseFilterModalOnEscape = (vimEnabled: boolean, vimMode: string) =>
+  !vimEnabled || vimMode === "normal";
+
 /** Compile the same programmable filter shape used by Redpanda Console. */
 export function compileFilter(code: string): FilterFn {
   const body = /\breturn\b/.test(code) ? code : `return (${code});`;

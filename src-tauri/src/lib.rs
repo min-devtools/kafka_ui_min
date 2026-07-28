@@ -31,6 +31,9 @@ struct SearchHandle {
 #[derive(Default)]
 struct SearchRegistry(Mutex<HashMap<String, SearchHandle>>);
 
+#[derive(Default)]
+struct LiveRegistry(Mutex<HashMap<String, Arc<AtomicBool>>>);
+
 /// One long-lived inspect consumer per connection config — avoids a fresh TCP +
 /// metadata handshake on every poll cycle. librdkafka reconnects on its own, so
 /// entries stay valid across broker restarts. Only used for read-only metadata
@@ -1397,6 +1400,184 @@ async fn kafka_consume(
     .map_err(|e| e.to_string())?
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LiveBatch {
+    live_id: String,
+    messages: Vec<MessageRec>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LiveFinished {
+    live_id: String,
+    error: Option<String>,
+}
+
+fn emit_live_batch(app: &AppHandle, live_id: &str, batch: &mut Vec<MessageRec>) {
+    if batch.is_empty() {
+        return;
+    }
+    let _ = app.emit(
+        "kafka-live-batch",
+        LiveBatch {
+            live_id: live_id.to_string(),
+            messages: std::mem::take(batch),
+        },
+    );
+}
+
+fn live_impl(
+    app: AppHandle,
+    live_id: String,
+    conn: KafkaConnection,
+    topic: String,
+    partition: Option<i32>,
+    cancelled: Arc<AtomicBool>,
+) -> Result<(), String> {
+    let mut config = base_config(&conn);
+    config
+        .set("group.id", format!("{INSPECT_GROUP}-live-{live_id}"))
+        .set("enable.auto.commit", "false")
+        .set("enable.partition.eof", "false");
+    let consumer: BaseConsumer = config.create().map_err(|e| e.to_string())?;
+    let md = consumer
+        .fetch_metadata(Some(&topic), TIMEOUT)
+        .map_err(|e| e.to_string())?;
+    let topic_meta = md
+        .topics()
+        .first()
+        .ok_or_else(|| format!("topic not found: {topic}"))?;
+    let mut partitions: Vec<i32> = topic_meta.partitions().iter().map(|item| item.id()).collect();
+    if let Some(selected) = partition {
+        if !partitions.contains(&selected) {
+            return Err(format!("partition {selected} does not exist on {topic}"));
+        }
+        partitions = vec![selected];
+    }
+
+    let mut assignments = TopicPartitionList::new();
+    for selected in partitions {
+        let (_, high) = consumer
+            .fetch_watermarks(&topic, selected, TIMEOUT)
+            .map_err(|e| e.to_string())?;
+        assignments
+            .add_partition_offset(&topic, selected, Offset::Offset(high))
+            .map_err(|e| e.to_string())?;
+    }
+    if assignments.count() == 0 {
+        return Ok(());
+    }
+    consumer.assign(&assignments).map_err(|e| e.to_string())?;
+
+    let mut batch = Vec::with_capacity(100);
+    let mut last_emit = Instant::now();
+    while !cancelled.load(Ordering::Relaxed) {
+        match consumer.poll(Duration::from_millis(200)) {
+            Some(Ok(message)) => {
+                let (payload, truncated) = lossy_capped(message.payload().unwrap_or_default());
+                let headers = message
+                    .headers()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .map(|header| {
+                                (
+                                    header.key.to_string(),
+                                    String::from_utf8_lossy(header.value.unwrap_or_default())
+                                        .into_owned(),
+                                )
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                batch.push(MessageRec {
+                    topic: topic.clone(),
+                    partition: message.partition(),
+                    offset: message.offset(),
+                    timestamp: message.timestamp().to_millis(),
+                    key: message
+                        .key()
+                        .map(|key| String::from_utf8_lossy(key).into_owned()),
+                    payload,
+                    truncated,
+                    headers,
+                });
+            }
+            Some(Err(error)) => {
+                consumer.unassign().ok();
+                return Err(error.to_string());
+            }
+            None => {}
+        }
+        if batch.len() >= 100
+            || (!batch.is_empty() && last_emit.elapsed() >= Duration::from_millis(200))
+        {
+            emit_live_batch(&app, &live_id, &mut batch);
+            last_emit = Instant::now();
+        }
+    }
+    emit_live_batch(&app, &live_id, &mut batch);
+    consumer.unassign().ok();
+    Ok(())
+}
+
+#[tauri::command]
+async fn kafka_live_start(
+    app: AppHandle,
+    registry: State<'_, LiveRegistry>,
+    live_id: String,
+    conn: KafkaConnection,
+    topic: String,
+    partition: Option<i32>,
+) -> Result<(), String> {
+    let cancelled = Arc::new(AtomicBool::new(false));
+    registry
+        .0
+        .lock()
+        .map_err(|e| e.to_string())?
+        .insert(live_id.clone(), cancelled.clone());
+    let app_for_worker = app.clone();
+    let id_for_worker = live_id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let error = live_impl(
+            app_for_worker.clone(),
+            id_for_worker.clone(),
+            conn,
+            topic,
+            partition,
+            cancelled,
+        )
+        .err();
+        let _ = app_for_worker.emit(
+            "kafka-live-finished",
+            LiveFinished {
+                live_id: id_for_worker.clone(),
+                error,
+            },
+        );
+        if let Some(registry) = app_for_worker.try_state::<LiveRegistry>() {
+            if let Ok(mut streams) = registry.0.lock() {
+                streams.remove(&id_for_worker);
+            }
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn kafka_live_stop(registry: State<'_, LiveRegistry>, live_id: String) -> Result<(), String> {
+    if let Some(cancelled) = registry
+        .0
+        .lock()
+        .map_err(|e| e.to_string())?
+        .get(&live_id)
+    {
+        cancelled.store(true, Ordering::Relaxed);
+    }
+    Ok(())
+}
+
 /// Commit new offsets for a (topic, group). Fails if the group has active members —
 /// same rule as `kafka-consumer-groups --reset-offsets`.
 fn reset_target(
@@ -1894,6 +2075,7 @@ async fn list_fonts() -> Result<Vec<String>, String> {
 pub fn run() {
     tauri::Builder::default()
         .manage(SearchRegistry::default())
+        .manage(LiveRegistry::default())
         .manage(ConsumerCache::default())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_window_state::Builder::default().build())
@@ -1908,6 +2090,8 @@ pub fn run() {
             kafka_group_offsets,
             kafka_group_members,
             kafka_consume,
+            kafka_live_start,
+            kafka_live_stop,
             kafka_search_start,
             kafka_search_cancel,
             kafka_search_set_paused,

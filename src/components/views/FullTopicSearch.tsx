@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Badge } from "../../ui/Badge";
@@ -16,6 +16,7 @@ import type { MessageRec, SearchBatch, SearchCondition, SearchFinished, SearchOp
 import { useActiveConnection, useClusterMeta } from "../../lib/queries";
 import { useApp } from "../../store";
 import { compileFilter, type JsFilter } from "../../lib/messageFilter";
+import { JsFilterBar } from "./JsFilterBar";
 
 const RESULT_CAP = 10_000;
 /** pages of matches kept buffered ahead of the viewed page before the scan idles */
@@ -34,22 +35,33 @@ const OPERATORS: { value: SearchOperator; label: string }[] = [
 type SearchState = "idle" | "running" | "completed" | "cancelled" | "failed";
 
 export function FullTopicSearch({
+  tabId,
   active,
   initialTopic,
   initialText = "",
   jsFilters,
-  onEditFilters,
-  onBrowse,
+  modeSwitch,
+  onAddFilter,
+  onToggleFilter,
+  onEditFilter,
+  onRemoveFilter,
+  onTopicChange,
 }: {
+  tabId?: string;
   active: boolean;
   initialTopic: string;
   initialText?: string;
   jsFilters: JsFilter[];
-  onEditFilters: () => void;
-  onBrowse: () => void;
+  modeSwitch: ReactNode;
+  onAddFilter: () => void;
+  onToggleFilter: (filter: JsFilter) => void;
+  onEditFilter: (filter: JsFilter) => void;
+  onRemoveFilter: (filter: JsFilter) => void;
+  onTopicChange: (topic: string) => void;
 }) {
   const conn = useActiveConnection();
   const meta = useClusterMeta();
+  const setTabRunning = useApp((s) => s.setTabRunning);
   const selectMsg = useApp((s) => s.selectMsg);
   const selectedMsg = useApp((s) => s.selectedMsg);
   const showToast = useApp((s) => s.showToast);
@@ -208,6 +220,19 @@ export function FullTopicSearch({
     showToast("Copied", `${sorted?.length ?? 0} search results as NDJSON.`);
   };
 
+  // ⌘↵ / Titlebar play button bumps runNonce
+  const runNonce = useApp((s) => s.runNonce);
+  const prevNonce = useRef(runNonce);
+  useEffect(() => {
+    if (runNonce !== prevNonce.current) {
+      prevNonce.current = runNonce;
+      if (active) {
+        if (state === "running") void cancel();
+        else void start();
+      }
+    }
+  }, [runNonce, active, state]);
+
   // Lazy scan: keep the backend scanning only until it has buffered enough matches
   // for the viewed page plus a lookahead, then idle it. Paging forward resumes —
   // the backend keeps its offsets, so nothing is re-scanned. A hidden tab pauses
@@ -237,20 +262,33 @@ export function FullTopicSearch({
         ? `Cancelled · scanned ${percent}%`
         : state === "failed" ? `Failed · ${error ?? "unknown error"}` : "Ready to scan";
 
+  const isRunning = state === "running";
+  useEffect(() => {
+    if (tabId) {
+      setTabRunning(tabId, isRunning);
+      return () => setTabRunning(tabId, false);
+    }
+  }, [tabId, isRunning, setTabRunning]);
+
   return (
     <section className={`content full-search-view ${active ? "active" : ""}`}>
       <LoadingBar active={state === "running" && !paused} />
       <div className="full-search-head">
-        <ToolButton onClick={onBrowse}><Icon name="arrow-left" /> Browse</ToolButton>
         <strong>Full topic search</strong>
         <span className="full-search-snapshot">Finite snapshot · scans every partition</span>
-        <span />
-        {state === "running"
-          ? <ToolButton variant="danger" onClick={() => void cancel()}><Icon name="x" /> Cancel</ToolButton>
-          : <ToolButton variant="primary" disabled={!conn} onClick={() => void start()}><Icon name="search" /> Search</ToolButton>}
+        <span style={{ flex: 1 }} />
+        {modeSwitch}
       </div>
       <div className="full-search-controls">
-        <Combobox value={topic} options={topicOptions} placeholder="— topic —" onChange={setTopic} />
+        <Combobox
+          value={topic}
+          options={topicOptions}
+          placeholder="— topic —"
+          onChange={(nextTopic) => {
+            setTopic(nextTopic);
+            onTopicChange(nextTopic);
+          }}
+        />
         <input
           className="index-search"
           placeholder="Search key or payload — scans the whole topic, case-insensitive"
@@ -261,7 +299,6 @@ export function FullTopicSearch({
         <ToolButton onClick={() => setConditions((items) => [...items, { field: "value.", operator: "equals", value: "" }])}>
           <Icon name="plus" /> Condition
         </ToolButton>
-        <ToolButton onClick={onEditFilters}><Icon name="code" /> JS filters ({jsFilters.filter((item) => item.enabled).length})</ToolButton>
       </div>
       {conditions.length > 0 && (
         <div className="full-search-conditions">
@@ -280,6 +317,14 @@ export function FullTopicSearch({
           ))}
         </div>
       )}
+      <JsFilterBar
+        filters={jsFilters}
+        disabled={!topic}
+        onAdd={onAddFilter}
+        onToggle={onToggleFilter}
+        onEdit={onEditFilter}
+        onRemove={onRemoveFilter}
+      />
       <div className="full-search-progress">
         <LoadingBar active bottom value={percent / 100} />
         <strong>{statusText}</strong>

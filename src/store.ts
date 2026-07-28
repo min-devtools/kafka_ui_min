@@ -141,10 +141,12 @@ interface AppState {
   commandOpen: boolean;
   /** bumped by ⌘↵ / titlebar play — the active Messages tab reacts by loading */
   runNonce: number;
+  runningTabs: Record<string, boolean>;
   toast: ToastMsg | null;
   dialog: (DialogRequest & { resolve: (value: string | null) => void }) | null;
 
   // actions
+  setTabRunning: (tabId: string, running: boolean) => void;
   setConnections: (conns: Connection[]) => void;
   saveConnection: (conn: Connection) => void;
   deleteConnection: (id: string) => void;
@@ -488,6 +490,9 @@ export const useApp = create<AppState>((set, get) => ({
   toggleLeft: () => set((s) => ({ leftCollapsed: !s.leftCollapsed })),
   toggleRight: () => set((s) => ({ rightCollapsed: !s.rightCollapsed })),
   setCommandOpen: (open) => set({ commandOpen: open }),
+  runningTabs: {},
+  setTabRunning: (tabId, running) =>
+    set((s) => ({ runningTabs: { ...s.runningTabs, [tabId]: running } })),
   runActive: () => set((s) => ({ runNonce: s.runNonce + 1 })),
 
   showToast: (title, body, kind) => {

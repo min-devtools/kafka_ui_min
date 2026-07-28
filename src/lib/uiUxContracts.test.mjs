@@ -39,10 +39,12 @@ test("topic and consumer-group rows use one click for their primary destination"
   assert.doesNotMatch(groups, /onDoubleClick/);
 });
 
-test("the titlebar and settings describe the active action accurately", () => {
+test("message actions stay in the message toolbar instead of competing with the titlebar", () => {
   assert.match(titlebar, /Produce message \(⌘↵\)/);
-  assert.match(titlebar, /Load messages \(⌘↵\)/);
+  assert.match(titlebar, /activeKind !== "messages"/);
   assert.match(titlebar, /aria-label=\{primaryActionLabel\}/);
+  assert.match(messages, /Icon name="refresh" \/> Load/);
+  assert.match(messages, /Icon name="play" \/> Start live/);
   assert.match(settings, />Run active action</);
 });
 
@@ -60,9 +62,10 @@ test("cluster-backed index views expose an inline error and retry action", () =>
   assert.match(connection, /connectionValid/);
 });
 
-test("messages progressively reveal secondary controls after a topic is selected", () => {
-  assert.match(messages, /\{topic && \([\s\S]*Full search/);
-  assert.match(messages, /\{topic && \([\s\S]*JS filter/);
+test("message modes are always visible while topic-specific filters remain progressive", () => {
+  assert.match(messages, /role="tablist" aria-label="Message view mode"/);
+  assert.match(messages, />Full search</);
+  assert.match(messages, /\{topic && \([\s\S]*<JsFilterBar/);
 });
 
 test("tabs, context menus and sortable headers expose keyboard semantics", () => {

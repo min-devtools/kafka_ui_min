@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import Editor, { type OnMount } from "@monaco-editor/react";
-import { initVimMode } from "monaco-vim";
+import { initVimMode, type VimAdapter, type VimModeChangeEvent } from "monaco-vim";
 import { MONACO_THEME } from "../lib/monaco";
 import { useApp } from "../store";
 
@@ -9,37 +9,57 @@ interface Props {
   onChange: (v: string) => void;
   /** element the vim statusbar renders into (mode indicator) */
   vimStatusRef?: React.RefObject<HTMLElement>;
+  onVimModeChange?: (mode: string) => void;
   height?: number | string;
   language?: string;
 }
 
 /** Compact Monaco editor for filter expressions / payloads — theme/font/vim follow app settings. */
-export function CodeInput({ value, onChange, vimStatusRef, height = 64, language = "javascript" }: Props) {
+export function CodeInput({ value, onChange, vimStatusRef, onVimModeChange, height = 64, language = "javascript" }: Props) {
   const vimMode = useApp((s) => s.vimMode);
   const editorFont = useApp((s) => s.editorFont);
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
-  const vimRef = useRef<{ dispose(): void } | null>(null);
+  const vimRef = useRef<VimAdapter | null>(null);
+  const vimModeHandlerRef = useRef<((event: VimModeChangeEvent) => void) | null>(null);
+  const modeChangeRef = useRef(onVimModeChange);
+  modeChangeRef.current = onVimModeChange;
+
+  const disposeVim = () => {
+    if (vimRef.current && vimModeHandlerRef.current) {
+      vimRef.current.off("vim-mode-change", vimModeHandlerRef.current);
+    }
+    vimRef.current?.dispose();
+    vimRef.current = null;
+    vimModeHandlerRef.current = null;
+  };
+
+  const startVim = (editor: Parameters<OnMount>[0]) => {
+    if (vimRef.current) return;
+    const adapter = initVimMode(editor, vimStatusRef?.current ?? null);
+    const onMode = (event: VimModeChangeEvent) => modeChangeRef.current?.(event.mode);
+    adapter.on("vim-mode-change", onMode);
+    vimRef.current = adapter;
+    vimModeHandlerRef.current = onMode;
+    modeChangeRef.current?.("normal");
+  };
 
   useEffect(() => {
     const editor = editorRef.current;
     if (vimMode && editor && !vimRef.current) {
-      vimRef.current = initVimMode(editor, vimStatusRef?.current ?? null);
+      startVim(editor);
     }
     if (!vimMode && vimRef.current) {
-      vimRef.current.dispose();
-      vimRef.current = null;
+      disposeVim();
       if (vimStatusRef?.current) vimStatusRef.current.textContent = "";
+      modeChangeRef.current?.("normal");
     }
-    return () => {
-      vimRef.current?.dispose();
-      vimRef.current = null;
-    };
+    return disposeVim;
   }, [vimMode, vimStatusRef]);
 
   const onMount: OnMount = (editor) => {
     editorRef.current = editor;
     if (useApp.getState().vimMode && !vimRef.current) {
-      vimRef.current = initVimMode(editor, vimStatusRef?.current ?? null);
+      startVim(editor);
     }
   };
 

@@ -144,6 +144,16 @@ export interface SearchBatch {
   messages: MessageRec[];
 }
 
+export interface LiveBatch {
+  liveId: string;
+  messages: MessageRec[];
+}
+
+export interface LiveFinished {
+  liveId: string;
+  error: string | null;
+}
+
 export interface SearchProgress {
   searchId: string;
   scanned: number;
