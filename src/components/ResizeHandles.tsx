@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useApp } from "../store";
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -8,8 +9,8 @@ export function restoreLayoutSizes() {
   const left = Number(localStorage.getItem("kafkamin:left-w"));
   const right = Number(localStorage.getItem("kafkamin:right-w"));
   const queryTop = Number(localStorage.getItem("kafkamin:query-top"));
-  if (left) document.body.style.setProperty("--left-w", `${left}px`);
-  if (right) document.body.style.setProperty("--right-w", `${right}px`);
+  if (left) document.body.style.setProperty("--left-w", `${Math.max(left, 298)}px`);
+  if (right) document.body.style.setProperty("--right-w", `${Math.max(right, 406)}px`);
   if (queryTop) document.body.style.setProperty("--query-top", `${queryTop}px`);
 }
 
@@ -28,18 +29,50 @@ export function startResize(
   const startY = event.clientY;
   const topPane = query?.firstElementChild as HTMLElement | undefined;
   const startTop = topPane ? topPane.getBoundingClientRect().height : 0;
+
+  const stop = () => {
+    document.body.classList.remove("resizing", "resizing-y", "resizing-x");
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", stop);
+    window.removeEventListener("pointercancel", stop);
+    try {
+      (event.currentTarget as HTMLElement).releasePointerCapture?.(event.pointerId);
+    } catch {}
+  };
+
+  const doCollapse = () => {
+    if (axis === "left") {
+      useApp.setState({ leftCollapsed: true });
+    } else if (axis === "right") {
+      useApp.setState({ rightCollapsed: true });
+    }
+    stop();
+  };
+
   const move = (e: PointerEvent) => {
     if (axis === "left" && main) {
       const rect = main.getBoundingClientRect();
       const max = Math.min(430, rect.width - 760);
-      const next = clamp(e.clientX - rect.left, 190, max);
+      const raw = e.clientX - rect.left;
+      const overshoot = 298 - raw;
+      if (overshoot >= 150) {
+        doCollapse();
+        return;
+      }
+      const next = clamp(raw, 298, max);
       document.body.style.setProperty("--left-w", `${Math.round(next)}px`);
       localStorage.setItem("kafkamin:left-w", String(Math.round(next)));
     }
     if (axis === "right" && main) {
       const rect = main.getBoundingClientRect();
       const max = Math.min(700, rect.width - 760);
-      const next = clamp(rect.right - e.clientX, 260, max);
+      const raw = rect.right - e.clientX;
+      const overshoot = 406 - raw;
+      if (overshoot >= 150) {
+        doCollapse();
+        return;
+      }
+      const next = clamp(raw, 406, max);
       document.body.style.setProperty("--right-w", `${Math.round(next)}px`);
       localStorage.setItem("kafkamin:right-w", String(Math.round(next)));
     }
@@ -51,12 +84,10 @@ export function startResize(
       localStorage.setItem("kafkamin:query-top", String(Math.round(next)));
     }
   };
-  const stop = () => {
-    document.body.classList.remove("resizing", "resizing-y");
-    window.removeEventListener("pointermove", move);
-  };
+
   window.addEventListener("pointermove", move);
   window.addEventListener("pointerup", stop, { once: true });
+  window.addEventListener("pointercancel", stop, { once: true });
 }
 
 export function PanelResizeHandles() {

@@ -9,10 +9,17 @@ export function SortTh({
   onSort: (col: string) => void;
   children: ReactNode;
 } & React.ThHTMLAttributes<HTMLTableCellElement>) {
+  const active = sort?.col === col;
   return (
-    <th {...rest} onClick={() => onSort(col)} style={{ cursor: "pointer", ...rest.style }}>
-      {children}
-      {sort?.col === col && <span className="sort-arrow">{sort.dir === "desc" ? " ▼" : " ▲"}</span>}
+    <th
+      {...rest}
+      aria-sort={active ? (sort.dir === "desc" ? "descending" : "ascending") : "none"}
+      style={rest.style}
+    >
+      <button type="button" className="sort-btn" onClick={() => onSort(col)}>
+        {children}
+        {active && <span className="sort-arrow">{sort.dir === "desc" ? " ▼" : " ▲"}</span>}
+      </button>
     </th>
   );
 }

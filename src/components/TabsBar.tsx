@@ -20,7 +20,7 @@ export function TabsBar() {
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const activeRef = useRef<HTMLButtonElement>(null);
+  const activeRef = useRef<HTMLDivElement>(null);
 
   // the bar scrolls, so a tab reached by ⌘1-9 / the palette / a close can be off-screen
   useEffect(() => {
@@ -40,12 +40,12 @@ export function TabsBar() {
     event.dataTransfer.getData("application/x-kafkamin-tab") || dragId;
 
   return (
-    <nav className="tabs">
+    <nav className="tabs" role="tablist" aria-label="Open tabs">
       <AnimatePresence initial={false} mode="popLayout">
       {tabs.map((tab) => {
         const conn = tab.connId ? connections.find((c) => c.id === tab.connId) : null;
         return (
-        <motion.button
+        <motion.div
           key={tab.id}
           ref={tab.id === activeTabId ? activeRef : undefined}
           layout
@@ -53,11 +53,21 @@ export function TabsBar() {
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.9, y: 4 }}
           transition={{ type: "spring", stiffness: 500, damping: 35 }}
-          type="button"
+          role="tab"
+          aria-selected={tab.id === activeTabId}
+          aria-label={conn && conn.name !== tab.title ? `${tab.title} · ${conn.name}` : tab.title}
+          tabIndex={tab.id === activeTabId ? 0 : -1}
           draggable={!editingId}
           className={`tab ${tab.id === activeTabId ? "active" : ""} ${dragId === tab.id ? "dragging" : ""} ${overId === tab.id && dragId && dragId !== tab.id ? "drag-over" : ""}`}
           style={connStyle(conn?.color)}
           onClick={() => activateTab(tab.id)}
+          onKeyDown={(event) => {
+            if (editingId === tab.id) return;
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              activateTab(tab.id);
+            }
+          }}
           onAuxClick={(e) => {
             // middle-click closes the tab
             if (e.button === 1) closeTab(tab.id);
@@ -120,20 +130,22 @@ export function TabsBar() {
             // a tab already titled after its owner would just repeat the name
             <span className="tab-conn">{conn.name}</span>
           )}
-          <motion.span
+          <motion.button
+            type="button"
             whileHover={{ scale: 1.15 }}
             whileTap={{ scale: 0.85 }}
             className="tab-close"
             title={`Close ${tab.title} (⌘W)`}
             aria-label={`Close ${tab.title}`}
+            onKeyDown={(event) => event.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation();
               closeTab(tab.id);
             }}
           >
             <Icon name="x" size={13} />
-          </motion.span>
-        </motion.button>
+          </motion.button>
+        </motion.div>
         );
       })}
       </AnimatePresence>

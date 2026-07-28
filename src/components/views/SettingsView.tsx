@@ -75,7 +75,7 @@ export function SettingsView({ active }: { active: boolean }) {
           <div className="shortcut-grid">
             <div className="shortcut-row"><span>Command palette</span><span className="kbd">⌘K</span></div>
             <div className="shortcut-row"><span>Open messages (active topic)</span><span className="kbd">⌘N</span></div>
-            <div className="shortcut-row"><span>Load messages</span><span className="kbd">⌘↵</span></div>
+            <div className="shortcut-row"><span>Run active action</span><span className="kbd">⌘↵</span></div>
             <div className="shortcut-row"><span>Browse topics</span><span className="kbd">⌘T</span></div>
             <div className="shortcut-row"><span>Consumer groups</span><span className="kbd">⌘G</span></div>
             <div className="shortcut-row"><span>Toggle sidebar</span><span className="kbd">⌘B</span></div>

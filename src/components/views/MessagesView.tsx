@@ -50,11 +50,11 @@ function tryParse(payload: string): unknown {
   }
 }
 
-/** JS filters are saved per topic so they survive tab close / app restart. */
-function loadJsFilters(topic: string): JsFilter[] {
-  if (!topic) return [];
+/** JS filters are saved per connection/topic so identically named topics do not leak across clusters. */
+function loadJsFilters(connId: string | undefined, topic: string): JsFilter[] {
+  if (!connId || !topic) return [];
   try {
-    const raw = localStorage.getItem(`kafkamin:jsfilters:${topic}`);
+    const raw = localStorage.getItem(`kafkamin:jsfilters:${connId}:${topic}`);
     const arr = raw ? JSON.parse(raw) : [];
     return Array.isArray(arr)
       ? arr.filter((f): f is JsFilter => typeof f?.id === "string" && typeof f?.code === "string")
@@ -72,6 +72,7 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
   const selectMsg = useApp((s) => s.selectMsg);
   const showToast = useApp((s) => s.showToast);
   const renameTab = useApp((s) => s.renameTab);
+  const setMessagesTabTopic = useApp((s) => s.setMessagesTabTopic);
 
   const [topic, setTopic] = useState(tabTopic);
   const [partition, setPartition] = useState<number | null>(null);
@@ -85,7 +86,7 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
   const [colsInput, setColsInput] = useState("");
   const [messages, setMessages] = useState<MessageRec[] | null>(null);
   const [loading, setLoading] = useState(false);
-  const [jsFilters, setJsFilters] = useState<JsFilter[]>(() => loadJsFilters(tabTopic));
+  const [jsFilters, setJsFilters] = useState<JsFilter[]>(() => loadJsFilters(conn?.id, tabTopic));
   const [mode, setMode] = useState<"browse" | "search">("browse");
   const [jsDraft, setJsDraft] = useState("");
   const [page, setPage] = useState(1);
@@ -99,7 +100,9 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
   const updateJsFilters = (fn: (fs: JsFilter[]) => JsFilter[]) =>
     setJsFilters((fs) => {
       const next = fn(fs);
-      if (topic) localStorage.setItem(`kafkamin:jsfilters:${topic}`, JSON.stringify(next));
+      if (conn && topic) {
+        localStorage.setItem(`kafkamin:jsfilters:${conn.id}:${topic}`, JSON.stringify(next));
+      }
       return next;
     });
 
@@ -154,7 +157,7 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
   }, [jsModalOpen, jsDraft, saveJsFilter]);
 
   useEffect(() => {
-    if (tabTopic) setTopic(tabTopic);
+    setTopic(tabTopic);
   }, [tabTopic]);
 
   // filters follow the topic
@@ -162,8 +165,8 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
   useEffect(() => {
     if (filtersTopicRef.current === topic) return;
     filtersTopicRef.current = topic;
-    setJsFilters(loadJsFilters(topic));
-  }, [topic]);
+    setJsFilters(loadJsFilters(conn?.id, topic));
+  }, [conn?.id, topic]);
 
   const partitions = meta.data?.topics.find((t) => t.name === topic)?.partitions ?? 0;
   const topicOptions = (meta.data?.topics ?? [])
@@ -365,7 +368,13 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
   return (
     <section
       className={`content indexes-view ${active ? "active" : ""}`}
-      style={{ gridTemplateRows: messages !== null ? "46px 46px minmax(0, 1fr) auto" : "46px 46px minmax(0, 1fr)" }}
+      style={{
+        gridTemplateRows: topic
+          ? messages !== null
+            ? "46px 46px minmax(0, 1fr) auto"
+            : "46px 46px minmax(0, 1fr)"
+          : "46px minmax(0, 1fr)",
+      }}
     >
       <LoadingBar active={loading} />
       {/* row 1 — source: topic / partition / limit / order */}
@@ -376,10 +385,14 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
           placeholder="— topic —"
           onChange={(v) => {
             setTopic(v);
+            setMessagesTabTopic(tabId, v);
+            selectMsg(null);
             setMessages(null);
             setPartition(null);
           }}
         />
+        {topic && (
+          <>
         <select
           className="index-search"
           style={{ width: 110 }}
@@ -432,8 +445,11 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
           <Icon name="search" /> Full search
         </ToolButton>
         <Badge>{messages ? `${rows.length}/${messages.length}` : "0"}</Badge>
+          </>
+        )}
       </div>
       {/* row 2 — search + column projection + JS filters */}
+      {topic && (
       <div className="index-searchbar" style={{ gridTemplateColumns: "minmax(220px, 1fr) minmax(180px, 280px) auto auto minmax(0, 1fr)" }}>
         <input
           className="index-search"
@@ -491,6 +507,7 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
           ))}
         </div>
       </div>
+      )}
       {timeModalOpen && (
         <DateTimeModal
           value={fromTime}
@@ -506,8 +523,11 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
         {/* initial load only — reloads with a table already on screen keep the LoadingBar */}
         <SectionVeil on={loading && messages === null} label="Loading messages…" />
         {!conn && <div className="empty-note">Connect to a cluster first.</div>}
-        {conn && messages === null && !loading && (
-          <div className="empty-note">Pick a topic — newest messages load automatically (⌘↵ or the play button reloads). Fetches are read-only, no offsets are committed.</div>
+        {conn && !topic && (
+          <div className="empty-note">Pick a topic to load its newest messages. Fetches are read-only and never commit offsets.</div>
+        )}
+        {conn && topic && messages === null && !loading && (
+          <div className="empty-note">Newest messages load automatically. Use ⌘↵ or the titlebar action to reload.</div>
         )}
         {messages !== null && (
           <table>

@@ -8,7 +8,7 @@ import { ContextMenu, type ContextMenuItem } from "../ui/ContextMenu";
 import { activeConnId as activeConnIdOf, useApp } from "../store";
 import { connStyle } from "../lib/connColor";
 import { ColorPicker } from "../ui/ColorPicker";
-import { useActiveConnection, useClusterMeta, useGroups } from "../lib/queries";
+import { useActiveConnection, useClusterMeta } from "../lib/queries";
 import { formatDocCount } from "../lib/format";
 import type { TabKind } from "../lib/types";
 import { Icon, type IconName } from "../ui/Icon";
@@ -28,13 +28,12 @@ export function Sidebar() {
   const [pickingColor, setPickingColor] = useState<string | null>(null);
   const conn = useActiveConnection();
   const meta = useClusterMeta();
-  const groups = useGroups();
   const queryClient = useQueryClient();
   const {
     connections, activeConnId, setActiveConn, deleteConnection, setEditingConn, setConnections,
     saveConnection, openDialog,
     tabs, activeTabId, openTab, activeTopic, setActiveTopic, showToast,
-    openMessagesTab, topicRecency,
+    openMessagesTab, openProduceTab, topicRecency,
   } = useApp(
     useShallow((s) => ({
       connections: s.connections, activeConnId: activeConnIdOf(s), setActiveConn: s.setActiveConn,
@@ -42,7 +41,7 @@ export function Sidebar() {
       saveConnection: s.saveConnection, openDialog: s.openDialog,
       tabs: s.tabs, activeTabId: s.activeTabId, openTab: s.openTab, activeTopic: s.activeTopic,
       setActiveTopic: s.setActiveTopic, showToast: s.showToast,
-      openMessagesTab: s.openMessagesTab, topicRecency: s.topicRecency,
+      openMessagesTab: s.openMessagesTab, openProduceTab: s.openProduceTab, topicRecency: s.topicRecency,
     })),
   );
   // drag-reorder state for the Connections group — pattern matches redis_min Sidebar
@@ -74,9 +73,16 @@ export function Sidebar() {
 
   const activeKind = tabs.find((t) => t.id === activeTabId)?.kind;
   const q = filter.trim().toLowerCase();
+  const shownNav = q
+    ? WORKSPACE_NAV.filter((item) => item.label.toLowerCase().includes(q))
+    : WORKSPACE_NAV;
+  const shownConnections = q
+    ? connections.filter((item) =>
+        item.name.toLowerCase().includes(q) || item.brokers.toLowerCase().includes(q))
+    : connections;
   const topicList = (meta.data?.topics ?? [])
     .filter((t) => !t.internal)
-    .filter((t) => !q || t.name.includes(q))
+    .filter((t) => !q || t.name.toLowerCase().includes(q))
     .sort((a, b) => {
       const ai = topicRecency.indexOf(a.name);
       const bi = topicRecency.indexOf(b.name);
@@ -124,13 +130,17 @@ export function Sidebar() {
       const el = document.activeElement as HTMLElement | null;
       const editable = !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
       if (editable) return;
+      const focusedConnId = el
+        ?.closest<HTMLElement>("[data-connection-id]")
+        ?.dataset.connectionId;
+      if (!focusedConnId || !connections.some((item) => item.id === focusedConnId)) return;
       const mod = event.metaKey || event.ctrlKey;
       if (!mod || event.shiftKey) return;
       const key = event.key.toLowerCase();
-      if (key === "d") { event.preventDefault(); duplicateConn(activeConnId); }
-      else if (key === "e") { event.preventDefault(); editConn(activeConnId); }
+      if (key === "d") { event.preventDefault(); duplicateConn(focusedConnId); }
+      else if (key === "e") { event.preventDefault(); editConn(focusedConnId); }
       // ⌘⌫ only — a plain Backspace outside inputs is too easy to hit by accident
-      else if (event.key === "Delete" || event.key === "Backspace") { event.preventDefault(); void removeConn(activeConnId); }
+      else if (event.key === "Delete" || event.key === "Backspace") { event.preventDefault(); void removeConn(focusedConnId); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -160,7 +170,7 @@ export function Sidebar() {
       <div className="sidebar-top">
         <input
           className="side-search"
-          placeholder="Search topics, groups, clusters"
+          placeholder="Search workspace, connections, topics"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
         />
@@ -168,7 +178,7 @@ export function Sidebar() {
       <div className="side-scroll">
         <div className="group">
           <div className="group-title"><span>Workspace</span><span /></div>
-          {WORKSPACE_NAV.map((item) => (
+          {shownNav.map((item) => (
             <div
               key={item.kind}
               className={`nav-item ${activeKind === item.kind ? "active" : ""}`}
@@ -194,15 +204,17 @@ export function Sidebar() {
           >
             <Icon name="plus" className="soft-blue" /><span>New Connection</span><Badge>setup</Badge>
           </div>
-          {connections.map((c) => (
+          {shownConnections.map((c) => (
             <div
               key={c.id}
+              data-connection-id={c.id}
               draggable
               className={`nav-item ${c.id === activeConnId ? "active" : ""} ${dragId === c.id ? "dragging" : ""} ${dropTarget?.id === c.id && dragId && dragId !== c.id ? (dropTarget.before ? "drop-before" : "drop-after") : ""}`}
               {...pressable(() => {
                 setActiveConn(c.id);
                 void queryClient.invalidateQueries();
               })}
+              onPointerDown={(event) => event.currentTarget.focus()}
               onContextMenu={(e) => {
                 e.preventDefault();
                 setConnMenu({ x: e.clientX, y: e.clientY, id: c.id });
@@ -269,11 +281,10 @@ export function Sidebar() {
             <div
               key={t.name}
               className={`index-item ${t.name === activeTopic ? "active" : ""}`}
-              {...pressable(() => setActiveTopic(t.name))}
-              onDoubleClick={() => {
+              {...pressable(() => {
                 setActiveTopic(t.name);
                 openMessagesTab(t.name);
-              }}
+              })}
               onContextMenu={(e) => {
                 e.preventDefault();
                 setActiveTopic(t.name);
@@ -296,12 +307,11 @@ export function Sidebar() {
         {conn && (
           <div className="group">
             <div className="group-title"><span>Cluster</span><span /></div>
-            <div className="nav-item" {...pressable(() => openTab("groups"))}>
-              <Icon name="groups" /><span>Consumer groups</span><span>{groups.data?.length || ""}</span>
-            </div>
-            <div className="nav-item" {...pressable(() => openTab("cluster"))}>
-              <Icon name="cluster" /><span>Brokers</span><span>{meta.data?.brokers.length || ""}</span>
-            </div>
+            {(!q || "cluster overview brokers".includes(q)) && (
+              <div className="nav-item" {...pressable(() => openTab("cluster"))}>
+                <Icon name="cluster" /><span>Cluster overview</span><span>{meta.data?.brokers.length || ""}</span>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -328,7 +338,7 @@ export function Sidebar() {
             onClose={() => setTopicMenu(null)}
             items={[
               { icon: "docs", label: "View messages", strong: true, onClick: () => openMessagesTab(topicMenu.topic) },
-              { icon: "send", label: "Produce to topic", onClick: () => openTab("produce") },
+              { icon: "send", label: "Produce to topic", onClick: () => openProduceTab(topicMenu.topic) },
               { icon: "topics", label: "Open All Topics", onClick: () => openTab("topics") },
               { icon: "groups", label: "Consumer groups", onClick: () => openTab("groups") },
             ]}

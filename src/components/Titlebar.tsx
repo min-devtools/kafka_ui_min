@@ -20,7 +20,12 @@ export function Titlebar() {
   );
   const queryClient = useQueryClient();
   const activeKind = tabs.find((t) => t.id === activeTabId)?.kind;
-  const activeIsMessages = activeKind === "messages" || activeKind === "produce";
+  const primaryActionLabel = activeKind === "produce"
+    ? "Produce message (⌘↵)"
+    : activeKind === "messages"
+      ? "Load messages (⌘↵)"
+      : "Open messages for active topic (⌘N)";
+  const runsActiveView = activeKind === "messages" || activeKind === "produce";
 
   const tone = !conn ? "idle" : meta.isError ? "red" : meta.data ? "green" : "idle";
   const label = !conn
@@ -48,9 +53,9 @@ export function Titlebar() {
         <ToolButton
           iconOnly
           variant="primary"
-          title={activeIsMessages ? "Load messages (⌘↵)" : "Open messages for active topic (⌘N)"}
-          aria-label="Load messages"
-          onClick={() => (activeIsMessages ? runActive() : openMessagesTab())}
+          title={primaryActionLabel}
+          aria-label={primaryActionLabel}
+          onClick={() => (runsActiveView ? runActive() : openMessagesTab())}
         >
           <Icon name="play" />
         </ToolButton>

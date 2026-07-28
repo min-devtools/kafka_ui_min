@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { Badge } from "../../ui/Badge";
+import { ToolButton } from "../../ui/ToolButton";
+import { Icon } from "../../ui/Icon";
 import { SortTh } from "../../ui/SortTh";
 import { useSortedRows } from "../../lib/useSort";
 import { useApp } from "../../store";
@@ -8,7 +10,6 @@ import type { GroupInfo } from "../../lib/types";
 
 export function GroupsView({ active }: { active: boolean }) {
   const [filter, setFilter] = useState("");
-  const [selected, setSelected] = useState<string | null>(null);
   const conn = useActiveConnection();
   const groups = useGroups();
   const openGroupTab = useApp((s) => s.openGroupTab);
@@ -30,11 +31,19 @@ export function GroupsView({ active }: { active: boolean }) {
         />
         <span />
         <span />
-        <Badge>{groups.data ? `${rows.length} groups` : conn ? "loading…" : "no connection"}</Badge>
+        <Badge tone={groups.isError ? "red" : undefined}>
+          {groups.isError ? "unreachable" : groups.data ? `${rows.length} groups` : conn ? "loading…" : "no connection"}
+        </Badge>
       </div>
       <div className="index-table-wrap">
         {!conn && <div className="empty-note">Connect to a cluster to load consumer groups.</div>}
-        {conn && (
+        {conn && groups.isError && (
+          <div className="empty-note">
+            Unable to load consumer groups — {String(groups.error)}{" "}
+            <ToolButton onClick={() => void groups.refetch()}><Icon name="refresh" /> Retry</ToolButton>
+          </div>
+        )}
+        {conn && !groups.isError && (
           <table>
             <thead>
               <tr>
@@ -47,10 +56,15 @@ export function GroupsView({ active }: { active: boolean }) {
               {(sorted ?? []).map((g) => (
                 <tr
                   key={g.name}
-                  className={g.name === selected ? "selected" : ""}
-                  onClick={() => setSelected(g.name)}
-                  onDoubleClick={() => openGroupTab(g.name)}
-                  title="Double-click to open members, offsets and lag"
+                  tabIndex={0}
+                  onClick={() => openGroupTab(g.name)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      openGroupTab(g.name);
+                    }
+                  }}
+                  title="Click to open members, offsets and lag"
                 >
                   <td>{g.name}</td>
                   <td>{g.state || "—"}</td>

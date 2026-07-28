@@ -63,6 +63,8 @@ export function ConnectionView({ active }: { active: boolean }) {
 
   const patch = (p: Partial<Connection>) => setDraft((d) => ({ ...d, ...p }));
   const sasl = draft.securityProtocol.startsWith("sasl");
+  const connectionValid = draft.name.trim().length > 0
+    && draft.brokers.split(",").some((broker) => broker.trim().length > 0);
 
   const runHandshake = async (): Promise<boolean> => {
     setTesting(true);
@@ -100,6 +102,10 @@ export function ConnectionView({ active }: { active: boolean }) {
   };
 
   const save = () => {
+    if (!connectionValid) {
+      showToast("Connection incomplete", "Enter a name and at least one bootstrap server.", "warn");
+      return;
+    }
     saveConnection(draft);
     setActiveConn(draft.id);
     void queryClient.invalidateQueries();
@@ -120,7 +126,7 @@ export function ConnectionView({ active }: { active: boolean }) {
           <ToolButton disabled={testing} onClick={() => void runHandshake()}>
             <Icon name="zap" /> {testing ? "Testing…" : "Test handshake"}
           </ToolButton>
-          <ToolButton variant="primary" onClick={save}>
+          <ToolButton variant="primary" disabled={!connectionValid} onClick={save}>
             <Icon name="save" /> Save connection
           </ToolButton>
         </div>

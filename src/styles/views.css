@@ -869,6 +869,31 @@ body.light .docs-preview-editor { color: var(--editor-fg); }
 
 .sort-arrow { color: var(--blue); font-size: 0.7692rem; }
 
+.sort-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  width: 100%;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  border: 0;
+  background: transparent;
+}
+
+.sort-btn:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--accent-focus, var(--blue)), transparent 40%);
+  outline-offset: 2px;
+}
+
+.tab-close {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
 .mapping-view { grid-template-rows: 38px minmax(0, 1fr); }
 
 .th-remove {
@@ -1074,4 +1099,3 @@ body.light .docs-preview-editor { color: var(--editor-fg); }
   background: var(--pane-2);
   border: 1px solid var(--line);
 }
-

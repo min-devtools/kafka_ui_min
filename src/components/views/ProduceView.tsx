@@ -26,6 +26,7 @@ export function ProduceView({ active }: { active: boolean }) {
   const meta = useClusterMeta();
   const queryClient = useQueryClient();
   const activeTopic = useApp((s) => s.activeTopic);
+  const produceIntent = useApp((s) => s.produceIntent);
   const showToast = useApp((s) => s.showToast);
 
   const [topic, setTopic] = useState(activeTopic ?? "");
@@ -36,6 +37,21 @@ export function ProduceView({ active }: { active: boolean }) {
   const [sending, setSending] = useState(false);
   const [lastResult, setLastResult] = useState<ProduceResult | null>(null);
   const vimStatusRef = useRef<HTMLSpanElement>(null);
+  const seenIntent = useRef(0);
+
+  useEffect(() => {
+    if (
+      active &&
+      conn &&
+      produceIntent &&
+      produceIntent.connId === conn.id &&
+      produceIntent.nonce !== seenIntent.current
+    ) {
+      seenIntent.current = produceIntent.nonce;
+      setTopic(produceIntent.topic);
+      setPartition(null);
+    }
+  }, [active, conn, produceIntent]);
 
   const partitions = meta.data?.topics.find((t) => t.name === topic)?.partitions ?? 0;
   const topicOptions = (meta.data?.topics ?? [])

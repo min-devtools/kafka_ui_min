@@ -119,6 +119,8 @@ interface AppState {
   activeTopic: string | null;
   /** topic names, most-recently-acted-on first — drives sidebar ordering */
   topicRecency: string[];
+  /** explicit context-menu intent for an already-mounted Produce tab */
+  produceIntent: { connId: string; topic: string; nonce: number } | null;
   /** message selected in a Messages tab — shown in the right-dock inspector */
   selectedMsg: MessageRec | null;
   /** connection being edited in the Connection tab (null = new draft) */
@@ -153,11 +155,13 @@ interface AppState {
   /** open (or focus) `kind` for `connId`, defaulting to the connection in focus */
   openTab: (kind: TabKind, connId?: string) => void;
   openMessagesTab: (topic?: string) => string;
+  openProduceTab: (topic?: string) => void;
   openGroupTab: (group: string) => void;
   closeTab: (id: string) => void;
   activateTab: (id: string) => void;
   reorderTab: (id: string, beforeId: string | null) => void;
   renameTab: (id: string, title: string) => void;
+  setMessagesTabTopic: (id: string, topic: string) => void;
 
   setActiveTopic: (topic: string | null) => void;
   bumpTopicRecency: (topic: string) => void;
@@ -217,6 +221,7 @@ export const useApp = create<AppState>((set, get) => ({
 
   activeTopic: session?.activeTopic ?? null,
   topicRecency: session?.topicRecency ?? [],
+  produceIntent: null,
   selectedMsg: null,
   editingConnId: null,
 
@@ -338,6 +343,26 @@ export const useApp = create<AppState>((set, get) => ({
     return id;
   },
 
+  openProduceTab: (topic) => {
+    const s = get();
+    const cid = activeConnId(s);
+    if (!cid) {
+      get().openTab("connection");
+      return;
+    }
+    if (topic) {
+      set({
+        activeTopic: topic,
+        produceIntent: {
+          connId: cid,
+          topic,
+          nonce: (s.produceIntent?.nonce ?? 0) + 1,
+        },
+      });
+    }
+    get().openTab("produce", cid);
+  },
+
   openGroupTab: (group) => {
     const s = get();
     const cid = activeConnId(s);
@@ -380,11 +405,16 @@ export const useApp = create<AppState>((set, get) => ({
       const to = s.tabs.find((t) => t.id === id);
       if (!to) return s;
       const from = activeConnId(s);
-      if (!to.connId || to.connId === from) return { activeTabId: id };
+      if (!to.connId || to.connId === from) {
+        return to.id !== s.activeTabId
+          ? { activeTabId: id, selectedMsg: null, rightCollapsed: true }
+          : { activeTabId: id };
+      }
       return {
         activeTabId: id,
         lastConnId: to.connId,
         selectedMsg: null,
+        rightCollapsed: true,
         activeTopic: null,
         topicRecency: [],
       };
@@ -404,6 +434,14 @@ export const useApp = create<AppState>((set, get) => ({
   renameTab: (id, title) =>
     set((s) => ({
       tabs: s.tabs.map((t) => (t.id === id ? { ...t, title: title.trim() || t.title } : t)),
+    })),
+
+  setMessagesTabTopic: (id, topic) =>
+    set((s) => ({
+      msgTabs: { ...s.msgTabs, [id]: { topic } },
+      tabs: s.tabs.map((t) => (t.id === id ? { ...t, title: msgTabTitle(topic) } : t)),
+      selectedMsg: s.activeTabId === id ? null : s.selectedMsg,
+      rightCollapsed: s.activeTabId === id ? true : s.rightCollapsed,
     })),
 
   setActiveTopic: (topic) => set({ activeTopic: topic }),

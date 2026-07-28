@@ -43,22 +43,40 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
     const rect = el.getBoundingClientRect();
     if (rect.right > window.innerWidth) el.style.left = `${window.innerWidth - rect.width - 12}px`;
     if (rect.bottom > window.innerHeight) el.style.top = `${window.innerHeight - rect.height - 12}px`;
+    requestAnimationFrame(() => el.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus());
   }, [x, y]);
+
+  const moveFocus = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const buttons = [...(ref.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? [])];
+    if (!buttons.length) return;
+    const next = event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? buttons.length - 1
+        : (index + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
+    buttons[next]?.focus();
+  };
 
   return (
     <motion.div
       ref={ref}
       className="index-context-menu"
+      role="menu"
       style={{ left: x, top: y }}
       initial={{ opacity: 0, scale: 0.93, y: -4 }}
       animate={{ opacity: 1, scale: 1, y: 0 }}
       exit={{ opacity: 0, scale: 0.93 }}
       transition={{ duration: 0.14, ease: [0.32, 0.72, 0, 1] }}
     >
-      {items.map((item) => (
-        <div
+      {items.map((item, index) => (
+        <button
+          type="button"
+          role="menuitem"
           key={item.label}
           className="context-item"
+          onKeyDown={(event) => moveFocus(event, index)}
           onClick={() => {
             item.onClick();
             onClose();
@@ -67,7 +85,7 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
           <Icon name={item.icon} size={15} />
           {item.strong ? <strong>{item.label}</strong> : <span>{item.label}</span>}
           {item.kbd ? <span className="kbd">{item.kbd}</span> : <span />}
-        </div>
+        </button>
       ))}
     </motion.div>
   );

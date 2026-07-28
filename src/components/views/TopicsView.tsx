@@ -30,10 +30,10 @@ export function TopicsView({ active }: { active: boolean }) {
   const meta = useClusterMeta();
   const stats = useTopicStats();
   const queryClient = useQueryClient();
-  const { openMessagesTab, setActiveTopic, activeTopic, showToast, openDialog, openTab } = useApp(
+  const { openMessagesTab, openProduceTab, setActiveTopic, activeTopic, showToast, openDialog } = useApp(
     useShallow((s) => ({
       openMessagesTab: s.openMessagesTab, setActiveTopic: s.setActiveTopic, activeTopic: s.activeTopic,
-      showToast: s.showToast, openDialog: s.openDialog, openTab: s.openTab,
+      openProduceTab: s.openProduceTab, showToast: s.showToast, openDialog: s.openDialog,
     })),
   );
 
@@ -41,7 +41,7 @@ export function TopicsView({ active }: { active: boolean }) {
   const statsByName = new Map((stats.data ?? []).map((s) => [s.name, s]));
   const rows: TopicRow[] = (meta.data?.topics ?? [])
     .filter((t) => showInternal || !t.internal)
-    .filter((t) => !q || t.name.includes(q))
+    .filter((t) => !q || t.name.toLowerCase().includes(q))
     .map((t) => ({
       ...t,
       messages: statsByName.get(t.name)?.messages ?? null,
@@ -128,15 +128,17 @@ export function TopicsView({ active }: { active: boolean }) {
         </label>
         <span />
         <span className="seg" style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
-          <ToolButton disabled={!conn} onClick={() => setCreating((v) => !v)}>
+          <ToolButton disabled={!conn || !meta.data || meta.isError} onClick={() => setCreating((v) => !v)}>
             <Icon name="plus" /> New topic
           </ToolButton>
-          <Badge>{meta.data ? `${rows.length} topics` : conn ? "loading…" : "no connection"}</Badge>
+          <Badge tone={meta.isError ? "red" : undefined}>
+            {meta.isError ? "unreachable" : meta.data ? `${rows.length} topics` : conn ? "loading…" : "no connection"}
+          </Badge>
         </span>
       </div>
       <div className="index-table-wrap">
         {/* initial load only — meta.isLoading is false once data exists, so background polls don't flash it */}
-        <SectionVeil on={!!conn && meta.isLoading} label="Loading topics…" />
+        <SectionVeil on={!!conn && meta.isLoading && !meta.isError} label="Loading topics…" />
         {creating && (
           <div className="panel" style={{ margin: 12 }}>
             <h3>Create topic</h3>
@@ -175,7 +177,13 @@ export function TopicsView({ active }: { active: boolean }) {
           </div>
         )}
         {!conn && <div className="empty-note">Connect to a cluster to load topics.</div>}
-        {conn && (
+        {conn && meta.isError && (
+          <div className="empty-note">
+            Unable to load topics — {String(meta.error)}{" "}
+            <ToolButton onClick={() => void meta.refetch()}><Icon name="refresh" /> Retry</ToolButton>
+          </div>
+        )}
+        {conn && !meta.isError && (
           <table>
             <thead>
               <tr>
@@ -191,14 +199,20 @@ export function TopicsView({ active }: { active: boolean }) {
                 <tr
                   key={t.name}
                   className={t.name === activeTopic ? "selected" : ""}
-                  onClick={() => setActiveTopic(t.name)}
-                  onDoubleClick={() => openMessagesTab(t.name)}
+                  tabIndex={0}
+                  onClick={() => openMessagesTab(t.name)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      openMessagesTab(t.name);
+                    }
+                  }}
                   onContextMenu={(e) => {
                     e.preventDefault();
                     setActiveTopic(t.name);
                     setMenu({ x: e.clientX, y: e.clientY, topic: t.name });
                   }}
-                  title="Double-click to view messages · right-click for menu"
+                  title="Click to view messages · right-click for menu"
                 >
                   <td>{t.name}</td>
                   <td>{t.partitions}</td>
@@ -219,7 +233,7 @@ export function TopicsView({ active }: { active: boolean }) {
             onClose={() => setMenu(null)}
             items={[
               { icon: "docs", label: "View messages", strong: true, onClick: () => openMessagesTab(menu.topic) },
-              { icon: "send", label: "Produce to topic", onClick: () => openTab("produce") },
+              { icon: "send", label: "Produce to topic", onClick: () => openProduceTab(menu.topic) },
               { icon: "settings", label: "Topic settings…", onClick: () => setSettingsTopic(menu.topic) },
               { icon: "zap", label: "Purge messages…", onClick: () => void purgeMessages(menu.topic) },
               { icon: "trash", label: "Delete topic", onClick: () => void removeTopic(menu.topic) },
