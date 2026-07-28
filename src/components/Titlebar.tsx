@@ -19,13 +19,14 @@ export function Titlebar() {
     })),
   );
   const queryClient = useQueryClient();
+  const isTabRunning = useApp((s) => !!s.runningTabs[s.activeTabId]);
   const activeKind = tabs.find((t) => t.id === activeTabId)?.kind;
   const primaryActionLabel = activeKind === "produce"
     ? "Produce message (⌘↵)"
     : activeKind === "messages"
-      ? "Load messages (⌘↵)"
+      ? "Run action / Load / Live / Search (⌘↵)"
       : "Open messages for active topic (⌘N)";
-  const runsActiveView = activeKind === "messages" || activeKind === "produce";
+  const runsActiveView = activeKind === "produce" || activeKind === "messages";
 
   const tone = !conn ? "idle" : meta.isError ? "red" : meta.data ? "green" : "idle";
   const label = !conn
@@ -55,15 +56,20 @@ export function Titlebar() {
           variant="primary"
           title={primaryActionLabel}
           aria-label={primaryActionLabel}
+          disabled={isTabRunning}
           onClick={() => (runsActiveView ? runActive() : openMessagesTab())}
         >
           <Icon name="play" />
         </ToolButton>
-        <ToolButton iconOnly title="Browse topics (⌘T)" aria-label="Browse topics" onClick={() => openTab("topics")}>
-          <Icon name="topics" />
-        </ToolButton>
-        <ToolButton iconOnly title="Consumer groups (⌘G)" aria-label="Consumer groups" onClick={() => openTab("groups")}>
-          <Icon name="groups" />
+        <ToolButton
+          iconOnly
+          variant="danger"
+          title="Stop / Cancel active task (⌘↵)"
+          aria-label="Stop / Cancel active task"
+          disabled={!isTabRunning}
+          onClick={() => runActive()}
+        >
+          <Icon name="x" />
         </ToolButton>
         <ToolButton
           iconOnly

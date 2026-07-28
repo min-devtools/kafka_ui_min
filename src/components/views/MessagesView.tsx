@@ -1,4 +1,5 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Badge } from "../../ui/Badge";
 import { ToolButton } from "../../ui/ToolButton";
@@ -13,13 +14,19 @@ import { Pagination } from "../../ui/Pagination";
 import { useSortedRows } from "../../lib/useSort";
 import { useApp } from "../../store";
 import { useActiveConnection, useClusterMeta } from "../../lib/queries";
-import { consumeMessages, type ConsumeFrom } from "../../lib/kafka";
+import { consumeMessages, startLiveMessages, stopLiveMessages, type ConsumeFrom } from "../../lib/kafka";
 import { setMessageFields } from "../../lib/monaco";
 import { formatTs, formatValue, getPath, valueClass } from "../../lib/format";
 import { isTypingTarget } from "../../lib/dom";
-import type { MessageRec } from "../../lib/types";
+import type { LiveBatch, LiveFinished, MessageRec } from "../../lib/types";
 import { FullTopicSearch } from "./FullTopicSearch";
-import { compileFilter, type FilterFn, type JsFilter } from "../../lib/messageFilter";
+import {
+  compileFilter,
+  shouldCloseFilterModalOnEscape,
+  type FilterFn,
+  type JsFilter,
+} from "../../lib/messageFilter";
+import { JsFilterBar } from "./JsFilterBar";
 
 /** Walk sampled payloads, collect dotted field paths for filter autocomplete. */
 function collectPaths(v: unknown, prefix: string, out: Set<string>, depth: number) {
@@ -38,6 +45,9 @@ function collectPaths(v: unknown, prefix: string, out: Set<string>, depth: numbe
 }
 
 type Row = MessageRec & { json?: unknown };
+type MessageMode = "browse" | "live" | "search";
+
+const LIVE_BUFFER_CAP = 5_000;
 
 /** "value.user.id" → "user.id"; bare "user.id" also accepted */
 const stripValue = (path: string) => (path.startsWith("value.") ? path.slice(6) : path);
@@ -73,6 +83,7 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
   const showToast = useApp((s) => s.showToast);
   const renameTab = useApp((s) => s.renameTab);
   const setMessagesTabTopic = useApp((s) => s.setMessagesTabTopic);
+  const vimMode = useApp((s) => s.vimMode);
 
   const [topic, setTopic] = useState(tabTopic);
   const [partition, setPartition] = useState<number | null>(null);
@@ -87,14 +98,24 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
   const [messages, setMessages] = useState<MessageRec[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [jsFilters, setJsFilters] = useState<JsFilter[]>(() => loadJsFilters(conn?.id, tabTopic));
-  const [mode, setMode] = useState<"browse" | "search">("browse");
+  const [mode, setMode] = useState<MessageMode>("browse");
+  const [liveRunning, setLiveRunning] = useState(false);
+  const [liveDropped, setLiveDropped] = useState(0);
   const [jsDraft, setJsDraft] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(100);
   const vimStatusRef = useRef<HTMLSpanElement>(null);
-
+  const vimEditorModeRef = useRef("normal");
+  const liveIdRef = useRef<string | null>(null);
+  const liveUnlistenRef = useRef<UnlistenFn[]>([]);
+  const setTabRunning = useApp((s) => s.setTabRunning);
   const [jsModalOpen, setJsModalOpen] = useState(false);
   const [editingFilterId, setEditingFilterId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setTabRunning(tabId, liveRunning);
+    return () => setTabRunning(tabId, false);
+  }, [tabId, liveRunning, setTabRunning]);
 
   // write-through: state + per-topic localStorage stay in sync
   const updateJsFilters = (fn: (fs: JsFilter[]) => JsFilter[]) =>
@@ -108,12 +129,15 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
 
   const openNewFilter = () => {
     setEditingFilterId(null);
+    setJsDraft("");
+    vimEditorModeRef.current = "normal";
     setJsModalOpen(true);
   };
 
   const openEditFilter = (f: JsFilter) => {
     setEditingFilterId(f.id);
     setJsDraft(f.code);
+    vimEditorModeRef.current = "normal";
     setJsModalOpen(true);
   };
 
@@ -143,6 +167,7 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
     if (!jsModalOpen) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        if (!shouldCloseFilterModalOnEscape(vimMode, vimEditorModeRef.current)) return;
         e.preventDefault();
         e.stopPropagation();
         setJsModalOpen(false);
@@ -154,7 +179,7 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
     };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
-  }, [jsModalOpen, jsDraft, saveJsFilter]);
+  }, [jsModalOpen, jsDraft, saveJsFilter, vimMode]);
 
   useEffect(() => {
     setTopic(tabTopic);
@@ -208,6 +233,90 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
     }
   };
 
+  const cleanupLiveListeners = () => {
+    liveUnlistenRef.current.forEach((unlisten) => unlisten());
+    liveUnlistenRef.current = [];
+  };
+
+  const stopLive = () => {
+    const liveId = liveIdRef.current;
+    liveIdRef.current = null;
+    setLiveRunning(false);
+    cleanupLiveListeners();
+    if (liveId) void stopLiveMessages(liveId);
+  };
+
+  const startLive = async () => {
+    if (!conn || !topic) {
+      showToast("Pick a topic", "Choose a topic before starting Live.", "warn");
+      return;
+    }
+    stopLive();
+    const liveId = crypto.randomUUID();
+    liveIdRef.current = liveId;
+    setMessages([]);
+    setPage(1);
+    setLiveDropped(0);
+    setLiveRunning(true);
+    selectMsg(null);
+
+    const [offBatch, offFinished] = await Promise.all([
+      listen<LiveBatch>("kafka-live-batch", ({ payload }) => {
+        if (payload.liveId !== liveId || liveIdRef.current !== liveId) return;
+        setMessages((current) => {
+          const next = [...(current ?? []), ...payload.messages];
+          const overflow = Math.max(0, next.length - LIVE_BUFFER_CAP);
+          if (overflow) setLiveDropped((count) => count + overflow);
+          const kept = overflow ? next.slice(overflow) : next;
+          setPage(Math.max(1, Math.ceil(kept.length / pageSize)));
+          return kept;
+        });
+      }),
+      listen<LiveFinished>("kafka-live-finished", ({ payload }) => {
+        if (payload.liveId !== liveId || liveIdRef.current !== liveId) return;
+        liveIdRef.current = null;
+        setLiveRunning(false);
+        window.setTimeout(cleanupLiveListeners, 0);
+        if (payload.error) showToast("Live stopped", payload.error, "err");
+      }),
+    ]);
+    liveUnlistenRef.current = [offBatch, offFinished];
+
+    try {
+      await startLiveMessages(conn, liveId, topic, partition);
+      renameTab(tabId, topic);
+    } catch (err) {
+      if (liveIdRef.current === liveId) {
+        liveIdRef.current = null;
+        setLiveRunning(false);
+        cleanupLiveListeners();
+      }
+      showToast("Live failed", String(err), "err");
+    }
+  };
+
+  useEffect(() => () => {
+    const liveId = liveIdRef.current;
+    liveIdRef.current = null;
+    liveUnlistenRef.current.forEach((unlisten) => unlisten());
+    liveUnlistenRef.current = [];
+    if (liveId) void stopLiveMessages(liveId);
+  }, []);
+
+  const switchMode = (next: MessageMode) => {
+    if (mode === "live" && next !== "live") {
+      stopLive();
+      setMessages(null);
+    }
+    setMode(next);
+    selectMsg(null);
+    if (next === "live") {
+      setMessages(topic ? [] : null);
+      setPage(1);
+      setLiveDropped(0);
+    }
+  };
+
   // feed field paths from loaded payloads into the JS-filter autocomplete
   useEffect(() => {
     if (!active || !messages?.length) return;
@@ -223,23 +332,27 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
     if (!active) autoLoadedTopic.current = null;
   }, [active]);
   useEffect(() => {
-    if (!active || !conn || !topic || loading || messages !== null) return;
+    if (mode !== "browse" || !active || !conn || !topic || loading || messages !== null) return;
     if (autoLoadedTopic.current === topic) return; // one attempt per topic — no retry loop on error
     autoLoadedTopic.current = topic;
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, conn, topic, messages, loading]);
+  }, [mode, active, conn, topic, messages, loading]);
 
-  // ⌘↵ / titlebar play bump runNonce — only the active tab loads
+  // ⌘↵ bumps runNonce — only the active tab responds with its current mode action
   const runNonce = useApp((s) => s.runNonce);
   const prevNonce = useRef(runNonce);
   useEffect(() => {
     if (runNonce !== prevNonce.current) {
       prevNonce.current = runNonce;
-      if (active && !loading) void load();
+      if (mode === "browse" && active && !loading) void load();
+      if (mode === "live" && active) {
+        if (liveRunning) stopLive();
+        else void startLive();
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runNonce, active]);
+  }, [runNonce, active, mode, liveRunning]);
 
   // ponytail: getPath-based projection, no wildcard/[$] support — port normalizeJson if needed
   const paths = useMemo(
@@ -307,7 +420,7 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
 
   // ↑/↓ walk the selection through the (sorted, filtered) rows; page follows
   useEffect(() => {
-    if (!active || mode !== "browse") return;
+    if (!active || mode === "search") return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
       if (isTypingTarget(e.target) || !sorted?.length) return;
@@ -330,6 +443,23 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
     showToast("Copied", `${sorted?.length ?? 0} filtered messages as NDJSON.`);
   };
 
+  const modeSwitch = (
+    <div className="message-mode-tabs" role="tablist" aria-label="Message view mode">
+      <button type="button" role="tab" aria-selected={mode === "browse"} className={mode === "browse" ? "active" : ""} onClick={() => switchMode("browse")}>
+        <Icon name="rows" size={13} />
+        <span>Browse</span>
+      </button>
+      <button type="button" role="tab" aria-selected={mode === "live"} className={mode === "live" ? "active" : ""} onClick={() => switchMode("live")}>
+        <Icon name="zap" size={13} />
+        <span>Live</span>
+      </button>
+      <button type="button" role="tab" aria-selected={mode === "search"} className={mode === "search" ? "active" : ""} onClick={() => switchMode("search")}>
+        <Icon name="search" size={13} />
+        <span>FullSearch</span>
+      </button>
+    </div>
+  );
+
   const jsModal = jsModalOpen && (
     <div className="modal" onMouseDown={(e) => { if (e.target === e.currentTarget) setJsModalOpen(false); }}>
       <div className="prompt-dialog" style={{ width: 620, maxWidth: "90vw" }}>
@@ -337,7 +467,13 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
         <p className="prompt-dialog-msg">
           Expression or body with <code>return</code> over (value, key, partition, offset, timestamp, headers) — message passes when truthy. Example: <code>value.status === "paid"</code>
         </p>
-        <CodeInput value={jsDraft} onChange={setJsDraft} vimStatusRef={vimStatusRef} height={140} />
+        <CodeInput
+          value={jsDraft}
+          onChange={setJsDraft}
+          vimStatusRef={vimStatusRef}
+          onVimModeChange={(editorMode) => { vimEditorModeRef.current = editorMode; }}
+          height={140}
+        />
         <div className="prompt-dialog-foot">
           <span ref={vimStatusRef} className="vim-status" style={{ flex: 1, textAlign: "left" }} />
           <ToolButton onClick={() => setJsModalOpen(false)}>Cancel</ToolButton>
@@ -353,12 +489,25 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
     return (
       <>
         <FullTopicSearch
+          tabId={tabId}
           active={active}
           initialTopic={topic}
           initialText={filter.trim()}
           jsFilters={jsFilters}
-          onEditFilters={openNewFilter}
-          onBrowse={() => setMode("browse")}
+          modeSwitch={modeSwitch}
+          onAddFilter={openNewFilter}
+          onToggleFilter={(item) => updateJsFilters((items) => items.map((filterItem) => (
+            filterItem.id === item.id ? { ...filterItem, enabled: !filterItem.enabled } : filterItem
+          )))}
+          onEditFilter={openEditFilter}
+          onRemoveFilter={(item) => updateJsFilters((items) => items.filter((filterItem) => filterItem.id !== item.id))}
+          onTopicChange={(nextTopic) => {
+            setTopic(nextTopic);
+            setMessagesTabTopic(tabId, nextTopic);
+            setMessages(null);
+            setPartition(null);
+            selectMsg(null);
+          }}
         />
         {jsModal}
       </>
@@ -371,142 +520,114 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
       style={{
         gridTemplateRows: topic
           ? messages !== null
-            ? "46px 46px minmax(0, 1fr) auto"
-            : "46px 46px minmax(0, 1fr)"
+            ? "46px 46px auto minmax(0, 1fr) auto"
+            : "46px 46px auto minmax(0, 1fr)"
           : "46px minmax(0, 1fr)",
       }}
     >
-      <LoadingBar active={loading} />
-      {/* row 1 — source: topic / partition / limit / order */}
-      <div className="index-searchbar" style={{ gridTemplateColumns: `minmax(260px, 460px) auto auto auto${from === "offset" || from === "timestamp" ? " auto" : ""} 1fr auto` }}>
+      <LoadingBar active={mode === "browse" && loading} />
+      <div className="message-sourcebar">
         <Combobox
           value={topic}
           options={topicOptions}
           placeholder="— topic —"
           onChange={(v) => {
+            if (liveRunning) stopLive();
             setTopic(v);
             setMessagesTabTopic(tabId, v);
             selectMsg(null);
-            setMessages(null);
+            setMessages(mode === "live" ? [] : null);
             setPartition(null);
           }}
         />
         {topic && (
           <>
-        <select
-          className="index-search"
-          style={{ width: 110 }}
-          value={partition ?? -1}
-          onChange={(e) => setPartition(Number(e.target.value) < 0 ? null : Number(e.target.value))}
-        >
-          <option value={-1}>all parts</option>
-          {Array.from({ length: partitions }, (_, i) => (
-            <option key={i} value={i}>p{i}</option>
-          ))}
-        </select>
-        {/* Combobox instead of native datalist — WKWebView datalist popups stick open / hide options */}
-        <div style={{ width: 110 }} title="Messages to fetch — pick a preset or type any number (1–10000)">
-          <Combobox
-            freeText
-            value={limitStr}
-            options={[50, 100, 250, 500, 1000, 5000, 10000].map((n) => ({ value: String(n) }))}
-            onChange={(v) => setLimitStr(v.replace(/[^0-9]/g, "") || "100")}
-          />
-        </div>
-        <select className="index-search" style={{ width: 140 }} value={from} onChange={(e) => setFrom(e.target.value as ConsumeFrom)}>
-          <option value="end">newest</option>
-          <option value="start">oldest</option>
-          <option value="offset">from offset</option>
-          <option value="timestamp">from time</option>
-        </select>
-        {from === "offset" && (
-          <input
-            className="index-search"
-            style={{ width: 130 }}
-            type="number"
-            min={0}
-            placeholder="start offset"
-            value={fromOffset}
-            onChange={(e) => setFromOffset(e.target.value)}
-          />
-        )}
-        {from === "timestamp" && (
-          <button
-            type="button"
-            className="index-search"
-            style={{ width: 200, textAlign: "left", font: "0.9231rem var(--font-mono)", color: fromTime ? "var(--text)" : "var(--text-3)" }}
-            title="Pick start date/time"
-            onClick={() => setTimeModalOpen(true)}
-          >
-            {fromTime ? fromTime.replace("T", " ") : "pick time…"}
-          </button>
-        )}
-        <ToolButton title="Scan the complete topic snapshot" onClick={() => setMode("search")}>
-          <Icon name="search" /> Full search
-        </ToolButton>
-        <Badge>{messages ? `${rows.length}/${messages.length}` : "0"}</Badge>
+            <select
+              className="index-search"
+              style={{ width: 110 }}
+              value={partition ?? -1}
+              onChange={(e) => {
+                if (liveRunning) stopLive();
+                setPartition(Number(e.target.value) < 0 ? null : Number(e.target.value));
+              }}
+            >
+              <option value={-1}>all parts</option>
+              {Array.from({ length: partitions }, (_, i) => (
+                <option key={i} value={i}>p{i}</option>
+              ))}
+            </select>
+            {mode === "browse" && (
+              <>
+                <div style={{ width: 110 }} title="Messages to fetch — pick a preset or type any number (1–10000)">
+                  <Combobox
+                    freeText
+                    value={limitStr}
+                    options={[50, 100, 250, 500, 1000, 5000, 10000].map((n) => ({ value: String(n) }))}
+                    onChange={(v) => setLimitStr(v.replace(/[^0-9]/g, "") || "100")}
+                  />
+                </div>
+                <select className="index-search" style={{ width: 140 }} value={from} onChange={(e) => setFrom(e.target.value as ConsumeFrom)}>
+                  <option value="end">newest</option>
+                  <option value="start">oldest</option>
+                  <option value="offset">from offset</option>
+                  <option value="timestamp">from time</option>
+                </select>
+                {from === "offset" && (
+                  <input className="index-search" style={{ width: 130 }} type="number" min={0} placeholder="start offset" value={fromOffset} onChange={(e) => setFromOffset(e.target.value)} />
+                )}
+                {from === "timestamp" && (
+                  <button
+                    type="button"
+                    className="index-search"
+                    style={{ width: 200, textAlign: "left", font: "0.9231rem var(--font-mono)", color: fromTime ? "var(--text)" : "var(--text-3)" }}
+                    title="Pick start date/time"
+                    onClick={() => setTimeModalOpen(true)}
+                  >
+                    {fromTime ? fromTime.replace("T", " ") : "pick time…"}
+                  </button>
+                )}
+              </>
+            )}
+            {mode === "live" && <span className="live-tail-note">Only new messages after Start live</span>}
+            <span className="message-source-spacer" />
+            <Badge>{mode === "live" ? (liveRunning ? "Listening" : "Stopped") : messages ? `${rows.length}/${messages.length}` : "0"}</Badge>
           </>
         )}
+        {!topic && <span className="message-source-spacer" />}
+        {modeSwitch}
       </div>
-      {/* row 2 — search + column projection + JS filters */}
       {topic && (
-      <div className="index-searchbar" style={{ gridTemplateColumns: "minmax(220px, 1fr) minmax(180px, 280px) auto auto minmax(0, 1fr)" }}>
-        <input
-          className="index-search"
-          placeholder={`Filter ${messages?.length ?? 0} loaded messages (key/payload)`}
-          title="Filters only the messages already loaded in this view — use Full search to scan the whole topic"
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-        />
-        <input
-          className="index-search"
-          placeholder="Columns: value.user.id, value.status"
-          title="Comma-separated JSON paths projected from the payload into table columns"
-          value={colsInput}
-          onChange={(e) => setColsInput(e.target.value)}
-        />
-        <ToolButton title="Add a Redpanda-style JS filter" onClick={openNewFilter}>
-          <Icon name="filter" /> JS filter
-        </ToolButton>
-        <ToolButton title="Copy the filtered rows to the clipboard as NDJSON" disabled={!rows.length} onClick={() => void copyNdjson()}>
-          <Icon name="copy" /> NDJSON
-        </ToolButton>
-        <div className="path-chip-row">
-          {jsFilters.map((f) => (
-            <span
-              key={f.id}
-              className="path-chip"
-              style={f.enabled ? undefined : { opacity: 0.45, filter: "grayscale(1)" }}
-              title={`${f.code} — click to ${f.enabled ? "disable" : "enable"}`}
-              onClick={() =>
-                updateJsFilters((fs) => fs.map((x) => (x.id === f.id ? { ...x, enabled: !x.enabled } : x)))
-              }
-            >
-              <span
-                title="Edit filter"
-                style={{ display: "inline-flex" }}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  openEditFilter(f);
-                }}
-              >
-                <Icon name="settings" size={12} />
-              </span>
-              {f.code.length > 48 ? `${f.code.slice(0, 48)}…` : f.code}
-              <span
-                title="Remove filter"
-                style={{ display: "inline-flex" }}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  updateJsFilters((fs) => fs.filter((x) => x.id !== f.id));
-                }}
-              >
-                <Icon name="x" size={12} />
-              </span>
-            </span>
-          ))}
+        <div className="message-querybar">
+          <input
+            className="index-search"
+            placeholder={`Filter ${messages?.length ?? 0} ${mode === "live" ? "live" : "loaded"} messages (key/payload)`}
+            title="Filters only messages currently buffered in this view"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+          />
+          <input
+            className="index-search"
+            placeholder="Columns: value.user.id, value.status"
+            title="Comma-separated JSON paths projected from the payload into table columns"
+            value={colsInput}
+            onChange={(e) => setColsInput(e.target.value)}
+          />
+          {mode === "live" && liveDropped > 0 && <Badge>{liveDropped} older dropped</Badge>}
+          <ToolButton title="Copy the filtered rows to the clipboard as NDJSON" disabled={!rows.length} onClick={() => void copyNdjson()}>
+            <Icon name="copy" /> NDJSON
+          </ToolButton>
         </div>
-      </div>
+      )}
+      {topic && (
+        <JsFilterBar
+          filters={jsFilters}
+          onAdd={openNewFilter}
+          onToggle={(item) => updateJsFilters((items) => items.map((filterItem) => (
+            filterItem.id === item.id ? { ...filterItem, enabled: !filterItem.enabled } : filterItem
+          )))}
+          onEdit={openEditFilter}
+          onRemove={(item) => updateJsFilters((items) => items.filter((filterItem) => filterItem.id !== item.id))}
+        />
       )}
       {timeModalOpen && (
         <DateTimeModal
@@ -521,13 +642,13 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
       {jsModal}
       <div className="index-table-wrap">
         {/* initial load only — reloads with a table already on screen keep the LoadingBar */}
-        <SectionVeil on={loading && messages === null} label="Loading messages…" />
+        <SectionVeil on={mode === "browse" && loading && messages === null} label="Loading messages…" />
         {!conn && <div className="empty-note">Connect to a cluster first.</div>}
         {conn && !topic && (
-          <div className="empty-note">Pick a topic to load its newest messages. Fetches are read-only and never commit offsets.</div>
+          <div className="empty-note">Pick a topic. Browse and Live are read-only and never commit offsets.</div>
         )}
-        {conn && topic && messages === null && !loading && (
-          <div className="empty-note">Newest messages load automatically. Use ⌘↵ or the titlebar action to reload.</div>
+        {mode === "browse" && conn && topic && messages === null && !loading && (
+          <div className="empty-note">Newest messages load automatically. Use Load or ⌘↵ to reload.</div>
         )}
         {messages !== null && (
           <table>
@@ -572,9 +693,13 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
               {rows.length === 0 && (
                 <tr>
                   <td colSpan={5 + paths.length}>
-                    No messages{q ? ` match "${deferredFilter.trim()}" in the ${messages?.length ?? 0} loaded here` : ""}.{" "}
-                    {q && (
-                      <ToolButton onClick={() => setMode("search")}>
+                    {mode === "live" && !q
+                      ? liveRunning
+                        ? "Waiting for messages produced after Live started…"
+                        : "Press Start live to tail only newly produced messages."
+                      : <>No messages{q ? ` match "${deferredFilter.trim()}" in the ${messages?.length ?? 0} buffered here` : ""}.</>}{" "}
+                    {mode === "browse" && q && (
+                      <ToolButton onClick={() => switchMode("search")}>
                         <Icon name="search" /> Search entire topic for “{deferredFilter.trim()}”
                       </ToolButton>
                     )}
@@ -587,7 +712,10 @@ export function MessagesView({ tabId, active }: { tabId: string; active: boolean
       </div>
       {messages !== null && (
         <div className="full-search-foot">
-          <span>{rows.length} filtered · {messages.length} loaded · times shown in local timezone</span>
+          <span>
+            {rows.length} filtered · {messages.length} {mode === "live" ? "buffered" : "loaded"}
+            {mode === "live" && liveDropped > 0 ? ` · ${liveDropped} older dropped` : ""} · times shown in local timezone
+          </span>
           <Pagination page={page} totalPages={totalPages} pageSize={pageSize} onPage={setPage} onPageSize={setPageSize} />
         </div>
       )}
