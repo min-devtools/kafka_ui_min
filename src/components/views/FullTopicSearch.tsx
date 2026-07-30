@@ -19,8 +19,6 @@ import { compileFilter, type JsFilter } from "../../lib/messageFilter";
 import { JsFilterBar } from "./JsFilterBar";
 
 const RESULT_CAP = 10_000;
-/** pages of matches kept buffered ahead of the viewed page before the scan idles */
-const PREFETCH_PAGES = 2;
 const OPERATORS: { value: SearchOperator; label: string }[] = [
   { value: "equals", label: "equals" },
   { value: "notEquals", label: "not equals" },
@@ -233,28 +231,26 @@ export function FullTopicSearch({
     }
   }, [runNonce, active, state]);
 
-  // Lazy scan: keep the backend scanning only until it has buffered enough matches
-  // for the viewed page plus a lookahead, then idle it. Paging forward resumes —
-  // the backend keeps its offsets, so nothing is re-scanned. A hidden tab pauses
-  // too: an invisible scan would otherwise burn CPU with no indicator anywhere.
+  // Scan runs to completion (or RESULT_CAP) across the whole topic without
+  // needing the user to page forward. Only pause on a hidden tab — an
+  // invisible scan would otherwise burn CPU with no indicator anywhere.
   useEffect(() => {
     const id = searchIdRef.current;
     if (state !== "running" || !id) return;
-    const target = Math.min((page + PREFETCH_PAGES) * pageSize, RESULT_CAP);
-    const shouldPause = !active || results.length >= target;
+    const shouldPause = !active;
     if (shouldPause !== pausedRef.current) {
       pausedRef.current = shouldPause;
       setPaused(shouldPause);
       void setFullTopicSearchPaused(id, shouldPause);
     }
-  }, [state, page, pageSize, results.length, active]);
+  }, [state, active]);
 
   const percent = progress?.total ? Math.min(100, Math.round(progress.scanned / progress.total * 100)) : 0;
   const backendTruncatedForJs = usesJsFilter && (progress?.candidateMatches ?? 0) > RESULT_CAP;
   const matchCount = usesJsFilter ? acceptedCount : (progress?.candidateMatches ?? acceptedCount);
   const statusText = state === "running"
     ? paused
-      ? `Idle · ${formatDocCount(matchCount)} matches ready · page forward to scan more`
+      ? `Paused · tab hidden · ${formatDocCount(matchCount)} matches so far`
       : `Scanning · ${percent}%`
     : state === "completed"
       ? matchCount ? `Completed · ${formatDocCount(matchCount)} matches` : "Completed · no matching messages"
